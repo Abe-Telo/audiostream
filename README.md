@@ -1,0 +1,111 @@
+# audiostream
+
+Stream the whole system audio mix from one PC to another over the local network, and play it on a speaker you pick — including a Bluetooth speaker or headphones the operating system already connected.
+
+There are two roles in one package:
+
+- **Sender (PC1)** records the desktop mix (WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux) and sends PCM over UDP.
+- **Receiver (PC2)** plays that stream on an output device you choose from a numbered list. Pair Bluetooth in the OS settings first. This app does not implement Bluetooth itself.
+
+## Install
+
+Python 3.10 or newer.
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Run the commands below from this directory. After `pip install .`, the `audiostream` command is equivalent to `python -m audiostream`.
+
+## Pair Bluetooth first (PC2)
+
+1. Pair and connect the speaker or headphones in the system sound settings.
+2. Confirm the OS can play to it (a system sound is enough).
+3. It then appears as a normal output device in the list below.
+
+## Run the receiver (PC2)
+
+```bash
+python -m audiostream receiver --list-devices
+python -m audiostream receiver --device 1 --test-tone
+```
+
+`--test-tone` plays a two-second tone on the device you picked, then listens for the sender. Use it to prove the Bluetooth output works before anything is on the network.
+
+`--device` takes the number from the list, or a unique part of the name. With no `--device`, the receiver prints the list and asks you to type a number. If stdin is not a terminal, pass `--device`.
+
+Default listen port is UDP **45123**, bound to all interfaces. The jitter buffer defaults to **120 ms**.
+
+## Run the sender (PC1)
+
+```bash
+python -m audiostream sender --list-devices
+python -m audiostream sender --host 192.168.1.20
+```
+
+`--host` is the receiver's LAN address (the IP flag is the path that always works). The sender captures the monitor of the default output, which is the system mix, not the microphone. Pick another output's loopback with `--device` if you need to.
+
+To find the receiver without typing an IP, leave the receiver's discovery beacon on (the default) and start the sender with:
+
+```bash
+python -m audiostream sender --discover
+```
+
+The beacon is a UDP broadcast on port **45124**. If the network blocks broadcast, use `--host`.
+
+## Firewall
+
+On PC2, allow inbound UDP **45123** (and **45124** if you use `--discover`). On Windows, allow Python on private networks when the firewall prompt appears. On Linux, open those ports in `ufw` or firewalld if a host firewall is enabled.
+
+If the receiver stays on `Waiting for the sender` while the sender's packet counter climbs, the packets are not arriving: wrong IP, or the firewall is dropping UDP.
+
+## Latency
+
+Default packets are about 5 ms of 48 kHz stereo PCM so each datagram fits in one LAN packet. The receiver holds **120 ms** before it starts playing, then drops a packet that shows up after its play time instead of stalling.
+
+What you hear is roughly the buffer plus one packet plus the OS audio period and Wi-Fi delay, on the order of **150 ms**. That is the intended tradeoff.
+
+- Stutters or gaps: raise the buffer, for example `--buffer-ms 200`.
+- Delay feels long and the LAN is clean: try `--buffer-ms 60`.
+- A `peak 0.000` line on the sender means the desktop mix is silent. Play something on PC1. A rising peak means capture is working.
+
+Useful range on Wi-Fi is about 50–200 ms of buffer.
+
+## Options
+
+| Flag | Role | Default |
+| --- | --- | --- |
+| `--host` | sender | required, unless `--discover` |
+| `--port` | both | 45123 |
+| `--sample-rate` | sender (tone on receiver) | 48000 |
+| `--channels` | sender (tone on receiver) | 2 |
+| `--chunk-ms` | sender | 5 (capped to stay under the MTU) |
+| `--buffer-ms` | receiver | 120 |
+| `--device` | both | prompt, or the default output's loopback |
+| `--bind` | receiver | 0.0.0.0 |
+| `--test-tone` | receiver | off |
+| `--no-discover` | receiver | beacon on |
+
+The receiver follows the sample rate and channel count in the stream. `--sample-rate` and `--channels` on the receiver apply to the test tone.
+
+## Operating systems
+
+**Windows (primary).** Capture is WASAPI loopback of a playback device: everything that device is playing. Playback is the output you select, including a connected Bluetooth endpoint.
+
+**Linux.** Capture is the PulseAudio or PipeWire monitor source of an output. PipeWire's Pulse compatibility socket is enough. Playback is any Pulse/PipeWire sink, including Bluetooth sinks that the desktop has already connected.
+
+**macOS.** CoreAudio cannot record the system mix. A microphone list is not desktop audio. Install a virtual device such as BlackHole, route system output into it yourself, and pass that input with `sender --device`. This app does not create the virtual device and does not pretend the default input is the system mix.
+
+## Tests
+
+No sound card is required for the tests. They cover packet encode/decode, sequence reorder, late drops, gap silence, and CLI `--help`.
+
+```bash
+python -m pytest
+```
+
+Cloud VMs and headless machines usually have no audio server. `sender --list-devices` and `receiver --list-devices` then exit with an error that names PulseAudio/PipeWire or WASAPI, instead of a traceback. If a loopback device exists, record from it the same way the sender does.
+
+## How the packets work
+
+Each datagram is a 20-byte header (`AS01`, version, channels, sample rate, sequence, frame count) plus interleaved PCM s16le. The receiver reorders a short window, plays in sequence order, writes silence for a missing sequence, and discards a packet that arrives after the playhead has moved on. A large sequence jump (the sender restarted) resyncs the buffer.

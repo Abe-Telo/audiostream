@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audiostream"
+version = "0.1.0"
+description = "Stream system audio over the LAN and play it on another PC"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "soundcard>=0.4.3",
+]
+
+[project.scripts]
+audiostream = "audiostream.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["audiostream*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
