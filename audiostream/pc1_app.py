@@ -31,6 +31,7 @@ class Pc1App:
         self.listener = Listener()
         self._want_stream = False
         self._want_listen = False
+        self._selected = list(self.roster.playback or ["default"])
         self._signature: tuple | None = None
         self.visible_names: list[str] = []
         self._capture_note = ""
@@ -266,6 +267,12 @@ class Pc1App:
             self._beacon = SenderBeacon(socket.gethostname(), control_port=self._joins.bound_port)
             self._beacon.start()
         self._presence = PresenceService(self.roster, socket.gethostname())
+        self._presence.receiving = self._want_listen
+        self._presence.selected_speakers = list(self._selected)
+        from audiostream.speakers import speaker_catalog
+
+        self._presence.speaker_catalog = speaker_catalog()
+        self._presence.on_speakers = lambda ids: self.root.after(0, lambda: self._use_speakers(ids, restart=True))
         self._presence.start()
         if self._presence.error and not self.roster.last_event:
             self.roster.last_event = self._presence.error
@@ -287,11 +294,17 @@ class Pc1App:
             self._want_listen = False
             self.listener.stop()
             self.receiver_button.configure(text="Receiver")
+            if self._presence is not None:
+                self._presence.receiving = False
             return
         self._want_listen = True
         self.receiver_button.configure(text="Stop receiving")
         self.listener.stop()
-        self.listener.start(None)
+        from audiostream.speakers import playback_arguments
+
+        self.listener.start(playback_arguments(self._selected))
+        if self._presence is not None:
+            self._presence.receiving = True
 
     def _save_roster(self) -> None:
         try:
@@ -562,6 +575,16 @@ class Pc1App:
             percent.grid(row=0, column=2, rowspan=2, sticky="e")
             tk.Button(
                 line,
+                text="Edit",
+                command=lambda ip=row["ip"], port=row["port"]: self._edit_dialog(ip, port),
+                relief="flat",
+                bg="#ffffff",
+                fg="#1a1a1a",
+                font=(self._font, 9),
+                cursor="hand2",
+            ).grid(row=0, column=3, rowspan=2, sticky="e", padx=(8, 0))
+            tk.Button(
+                line,
                 text="Remove",
                 command=lambda ip=row["ip"], port=row["port"]: self._remove(ip, port),
                 relief="flat",
@@ -570,8 +593,71 @@ class Pc1App:
                 activeforeground="#c42b1c",
                 font=(self._font, 9),
                 cursor="hand2",
-            ).grid(row=0, column=3, rowspan=2, sticky="e", padx=(8, 0))
+            ).grid(row=0, column=4, rowspan=2, sticky="e", padx=(8, 0))
             tk.Frame(self.list_frame, bg="#eeeeee", height=1).pack(fill="x", padx=12)
+
+    def _use_speakers(self, speaker_ids, restart: bool = False) -> None:
+        from audiostream.speakers import clean_speaker_ids, playback_arguments
+
+        self._selected = clean_speaker_ids(speaker_ids) or ["default"]
+        self.roster.set_playback(self._selected)
+        try:
+            self.roster.save()
+        except OSError:
+            pass
+        if self._presence is not None:
+            self._presence.selected_speakers = list(self._selected)
+        if restart and self._want_listen:
+            self.listener.stop()
+            self.listener.start(playback_arguments(self._selected))
+
+    def _speaker_choices(self, ip: str, port: int) -> tuple[list[dict], list[str]]:
+        from audiostream.speakers import speaker_catalog
+
+        own = self._presence.own_ip if self._presence is not None else lan_ipv4()
+        if ip == own:
+            catalog = self._presence.speaker_catalog if self._presence is not None else speaker_catalog()
+            return catalog or speaker_catalog(), list(self._selected or ["default"])
+        catalog = [{"id": "default", "name": "Default playback"}]
+        selected = ["default"]
+        for row in self.roster.snapshot():
+            if row["ip"] == ip and row["port"] == port and row.get("speakers"):
+                selected = list(row["speakers"])
+        if self._presence is not None:
+            for peer in self._presence.peers():
+                if peer["ip"] != ip:
+                    continue
+                if peer.get("speakers"):
+                    catalog = peer["speakers"]
+                if peer.get("selected"):
+                    selected = list(peer["selected"])
+        return catalog, selected
+
+    def _edit_dialog(self, ip: str, port: int) -> None:
+        from audiostream.speakers import edit_speakers_dialog
+
+        name = ip
+        for row in self.roster.snapshot():
+            if row["ip"] == ip and row["port"] == port:
+                name = row["name"]
+                break
+        catalog, selected = self._speaker_choices(ip, port)
+        own = self._presence.own_ip if self._presence is not None else lan_ipv4()
+
+        def save(speaker_ids: list[str]) -> None:
+            if ip == own:
+                self._use_speakers(speaker_ids, restart=True)
+                return
+            self.roster.set_speakers(ip, port, speaker_ids)
+            try:
+                self.roster.save()
+            except OSError:
+                pass
+            if self._presence is not None:
+                self._presence.publish_speakers(ip, port, speaker_ids)
+            self.refresh_devices()
+
+        edit_speakers_dialog(self.root, name, catalog, selected, save)
 
     def _remove(self, ip: str, port: int) -> None:
         self.roster.remove(ip, port)
@@ -624,6 +710,8 @@ class Pc1App:
         level = min(1.0, max(0.0, peak))
         self.meter.coords(self.meter_fill, 0, 0, width * level, 12)
         self.event_label.configure(text=self.roster.last_event)
+        if self._presence is not None:
+            self._presence.receiving = self._want_listen
         if self._tray is not None:
             tip = "Audiostream PC1 — sending" if self._want_stream else "Audiostream PC1"
             self._tray.set_tooltip(tip)

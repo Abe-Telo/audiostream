@@ -21,10 +21,34 @@ def test_pc1_window_lists_a_computer():
         app.root.update_idletasks()
         assert app.visible_names == ["Kitchen", "Living room"]
         labels = [child.cget("text") for child in _labels(app.list_frame)]
+        buttons = [child.cget("text") for child in _of_class(app.list_frame, "Button")]
         assert "Living room" in labels
+        assert "Edit" in buttons
         assert "192.168.1.198:45123    Added by you" in labels
     finally:
         app.close()
+
+
+def test_pc2_lists_computers_that_are_receiving():
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        probe = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display")
+    probe.destroy()
+
+    from audiostream.pc2_app import Pc2App
+
+    app = Pc2App(start_audio=False, start_presence=False, roster=Roster(None))
+    try:
+        app.roster.upsert("192.168.1.198", 45123, "Living room", "network")
+        app.refresh_devices()
+        app.root.update_idletasks()
+        assert app.visible_names == ["Living room"]
+        buttons = [child.cget("text") for child in _of_class(app.list_frame, "Button")]
+        assert "Edit" in buttons
+    finally:
+        app.quit()
 
 
 def test_closing_the_window_hides_to_the_tray():

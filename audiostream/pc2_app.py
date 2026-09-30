@@ -13,6 +13,7 @@ from audiostream.listen import Listener
 from audiostream.logsetup import ensure_stdio
 from audiostream.net import lan_ipv4
 from audiostream.presence import PresenceService
+from audiostream.roster import Roster, default_pc2_roster_path
 from audiostream.tray import TrayIcon, set_window_icon
 
 
@@ -23,8 +24,14 @@ def run_pc2() -> None:
 
 
 class Pc2App:
-    def __init__(self, start_audio: bool = True, start_presence: bool = True) -> None:
+    def __init__(self, start_audio: bool = True, start_presence: bool = True, roster: Roster | None = None) -> None:
+        self.roster = roster if roster is not None else Roster(default_pc2_roster_path())
+        if roster is None:
+            self.roster.load()
         self.listener = Listener()
+        self._selected = list(self.roster.playback or ["default"])
+        self._signature: tuple | None = None
+        self.visible_names: list[str] = []
         self._presence: PresenceService | None = None
         self._tray: TrayIcon | None = None
         self._told_tray = False
@@ -34,15 +41,21 @@ class Pc2App:
 
         self.root = tk.Tk()
         self.root.title("Audiostream PC2")
-        self.root.geometry("640x460")
-        self.root.minsize(520, 420)
+        self.root.geometry("760x780")
+        self.root.minsize(640, 560)
         self.root.configure(bg="#f3f3f3")
         self._font = "Segoe UI"
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_button)
         self.root.after(250, self._tick)
         if start_presence:
-            self._presence = PresenceService(None, socket.gethostname())
+            from audiostream.speakers import speaker_catalog
+
+            self._presence = PresenceService(self.roster, socket.gethostname())
+            self._presence.receiving = True
+            self._presence.selected_speakers = list(self._selected)
+            self._presence.speaker_catalog = speaker_catalog()
+            self._presence.on_speakers = lambda ids: self.root.after(0, lambda: self._use_speakers(ids))
             self._presence.start()
         if self.start_audio:
             self.root.after(400, self.start_listening)
@@ -142,9 +155,20 @@ class Pc2App:
         ).pack(anchor="w", pady=(8, 0))
         ttk.Label(
             outer,
-            text="This PC adds itself to a sender on the same network. You can also add this PC's address from PC1.",
-            wraplength=560,
-        ).pack(anchor="w", pady=(8, 0))
+            text="Computers that are receiving show up here, on every PC running Audiostream.",
+            wraplength=700,
+        ).pack(side="bottom", anchor="w")
+
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(16, 6))
+        self.count_label = ttk.Label(header, text="Receiving", font=(self._font, 11, "bold"))
+        self.count_label.pack(side="left")
+
+        list_card = tk.Frame(outer, bg="#ffffff", highlightbackground="#d0d0d0", highlightthickness=1)
+        list_card.pack(fill="both", expand=True)
+        self.list_frame = tk.Frame(list_card, bg="#ffffff")
+        self.list_frame.pack(fill="both", expand=True)
+        self.refresh_devices()
 
     def _load_devices(self) -> None:
         labels = ["Default playback"]
@@ -162,12 +186,119 @@ class Pc2App:
             self.device_var.set(labels[0])
 
     def _device_changed(self, _event=None) -> None:
-        if self.listener.running:
-            self.start_listening()
+        choice = device_argument(self.device_var.get())
+        self._use_speakers(["default"] if choice is None else [choice])
 
     def start_listening(self) -> None:
+        from audiostream.speakers import playback_arguments
+
         self.listener.stop()
-        self.listener.start(device_argument(self.device_var.get()))
+        self.listener.start(playback_arguments(self._selected))
+
+    def _use_speakers(self, speaker_ids) -> None:
+        from audiostream.speakers import clean_speaker_ids, playback_arguments
+
+        self._selected = clean_speaker_ids(speaker_ids) or ["default"]
+        self.roster.set_playback(self._selected)
+        try:
+            self.roster.save()
+        except OSError:
+            pass
+        if self._presence is not None:
+            self._presence.selected_speakers = list(self._selected)
+        if self.listener.running or self.start_audio:
+            self.listener.stop()
+            self.listener.start(playback_arguments(self._selected))
+
+    def _edit_dialog(self, ip: str, port: int) -> None:
+        from audiostream.speakers import edit_speakers_dialog, speaker_catalog
+
+        name = ip
+        catalog = [{"id": "default", "name": "Default playback"}]
+        selected = ["default"]
+        own = self._presence.own_ip if self._presence is not None else lan_ipv4()
+        for row in self.roster.snapshot():
+            if row["ip"] == ip and row["port"] == port:
+                name = row["name"]
+                if row.get("speakers"):
+                    selected = list(row["speakers"])
+        if ip == own:
+            catalog = self._presence.speaker_catalog if self._presence is not None else speaker_catalog()
+            selected = list(self._selected or ["default"])
+        elif self._presence is not None:
+            for peer in self._presence.peers():
+                if peer["ip"] != ip:
+                    continue
+                if peer.get("speakers"):
+                    catalog = peer["speakers"]
+                if peer.get("selected"):
+                    selected = list(peer["selected"])
+
+        def save(speaker_ids: list[str]) -> None:
+            if ip == own:
+                self._use_speakers(speaker_ids)
+                return
+            self.roster.set_speakers(ip, port, speaker_ids)
+            try:
+                self.roster.save()
+            except OSError:
+                pass
+            if self._presence is not None:
+                self._presence.publish_speakers(ip, port, speaker_ids)
+            self.refresh_devices()
+
+        edit_speakers_dialog(self.root, name, catalog, selected, save)
+
+    def refresh_devices(self) -> None:
+        rows = self.roster.snapshot()
+        self.visible_names = [row["name"] for row in rows]
+        signature = tuple((row["ip"], row["port"], row["name"], tuple(row.get("speakers") or ())) for row in rows)
+        count = len(rows)
+        noun = "computer" if count == 1 else "computers"
+        self.count_label.configure(text=f"Receiving  ·  {count} {noun}" if count else "Receiving")
+        if signature == self._signature:
+            return
+        self._signature = signature
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        if not rows:
+            tk.Label(
+                self.list_frame,
+                text="No computers are receiving yet.\n\nThey show up here when Audiostream is open and receiving.",
+                bg="#ffffff",
+                fg="#5d5d5d",
+                justify="left",
+                anchor="w",
+                font=(self._font, 10),
+                padx=14,
+                pady=14,
+            ).pack(fill="x")
+            return
+        for row in rows:
+            line = tk.Frame(self.list_frame, bg="#ffffff")
+            line.pack(fill="x", padx=12, pady=8)
+            line.columnconfigure(0, weight=1)
+            tk.Label(line, text=row["name"], bg="#ffffff", fg="#1a1a1a", font=(self._font, 11, "bold")).grid(
+                row=0, column=0, sticky="w"
+            )
+            tk.Label(
+                line,
+                text=f"{row['ip']}:{row['port']}    Receiving",
+                bg="#ffffff",
+                fg="#5d5d5d",
+                font=(self._font, 9),
+            ).grid(row=1, column=0, sticky="w")
+            tk.Button(
+                line,
+                text="Edit",
+                command=lambda ip=row["ip"], port=row["port"]: self._edit_dialog(ip, port),
+                relief="flat",
+                bg="#ffffff",
+                fg="#1a1a1a",
+                font=(self._font, 9),
+                cursor="hand2",
+            ).grid(row=0, column=1, rowspan=2, sticky="e")
+            tk.Frame(self.list_frame, bg="#eeeeee", height=1).pack(fill="x", padx=12)
 
     def test_tone(self) -> None:
         if self._tone_running:
@@ -222,6 +353,7 @@ class Pc2App:
                 self.status.configure(text=text)
             elif phase == "starting":
                 self.status.configure(text="Starting...")
+        self.refresh_devices()
         if self._tray is not None:
             with self.listener.stats.lock:
                 phase = self.listener.stats.phase

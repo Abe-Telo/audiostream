@@ -345,6 +345,10 @@ class PresenceService:
         self._ready = threading.Event()
         self._sock: socket.socket | None = None
         self._announce_addr: tuple[str, int] | None = ("255.255.255.255", PRESENCE_PORT) if port == PRESENCE_PORT else None
+        self.receiving = False
+        self.speaker_catalog: list[dict] = [{"id": "default", "name": "Default playback"}]
+        self.selected_speakers: list[str] = ["default"]
+        self.on_speakers = None
         self._thread = threading.Thread(target=self._run, name="audiostream-presence", daemon=True)
 
     def start(self) -> None:
@@ -365,7 +369,14 @@ class PresenceService:
         now = time.time()
         with self._lock:
             rows = [
-                {"ip": ip, "name": info["name"], "port": info["port"]}
+                {
+                    "ip": ip,
+                    "name": info["name"],
+                    "port": info["port"],
+                    "receiving": bool(info.get("receiving")),
+                    "speakers": list(info.get("speakers") or []),
+                    "selected": list(info.get("selected") or ["default"]),
+                }
                 for ip, info in self._peers.items()
                 if now - info["seen"] < 6 and ip != self.own_ip
             ]
@@ -402,8 +413,32 @@ class PresenceService:
     def publish_volume(self, ip: str, port: int, volume: int) -> None:
         self._emit("volume", ip, port, "", int(volume))
 
+    def publish_speakers(self, ip: str, port: int, speaker_ids: list[str]) -> None:
+        from audiostream.speakers import clean_speaker_ids
+
+        ids = clean_speaker_ids(speaker_ids) or ["default"]
+        message = {
+            "kind": "share",
+            "id": uuid.uuid4().hex,
+            "op": "speakers",
+            "ip": ip,
+            "port": int(port),
+            "name": "",
+            "volume": 100,
+            "speakers": ids,
+        }
+        self._remember(message["id"])
+        self._send(message, self._announce_addr)
+
     def _hello(self) -> dict:
-        return {"kind": "hello", "name": self.name, "port": self.stream_port}
+        return {
+            "kind": "hello",
+            "name": self.name,
+            "port": self.stream_port,
+            "receiving": bool(self.receiving),
+            "speakers": list(self.speaker_catalog),
+            "selected": list(self.selected_speakers),
+        }
 
     def _names(self) -> dict[tuple[str, int], str]:
         if self.roster is None:
@@ -508,8 +543,21 @@ class PresenceService:
             except (TypeError, ValueError):
                 return
             name = str(message.get("name") or addr[0])[:64]
+            from audiostream.speakers import clean_speaker_catalog, clean_speaker_ids
+
+            receiving = bool(message.get("receiving"))
+            speakers = clean_speaker_catalog(message.get("speakers"))
+            selected = clean_speaker_ids(message.get("selected")) or ["default"]
             with self._lock:
-                self._peers[addr[0]] = {"name": name, "port": port, "seen": time.time()}
+                self._peers[addr[0]] = {
+                    "name": name,
+                    "port": port,
+                    "seen": time.time(),
+                    "receiving": receiving,
+                    "speakers": speakers,
+                    "selected": selected,
+                }
+            self._note_receiver(addr[0], port, name, receiving, selected)
             return
         if kind != "share":
             return
@@ -529,6 +577,29 @@ class PresenceService:
         try:
             port = int(message.get("port") or 0)
         except (TypeError, ValueError):
+            return
+        if op == "speakers":
+            from audiostream.speakers import clean_speaker_ids
+
+            ids = clean_speaker_ids(message.get("speakers")) or ["default"]
+            if ip == self.own_ip:
+                self.selected_speakers = ids
+                callback = self.on_speakers
+                if callback is not None:
+                    try:
+                        callback(list(ids))
+                    except Exception:
+                        pass
+                return
+            if self.roster is not None and 1 <= port <= 65535:
+                try:
+                    self.roster.set_speakers(ip, port, ids)
+                except Exception:
+                    return
+            with self._lock:
+                peer = self._peers.get(ip)
+                if peer is not None:
+                    peer["selected"] = ids
             return
         if not ip or ip == self.own_ip or not 1 <= port <= 65535:
             return
@@ -554,3 +625,19 @@ class PresenceService:
             return
         with self._lock:
             self._published = self._names()
+
+    def _note_receiver(self, ip: str, port: int, name: str, receiving: bool, selected: list[str]) -> None:
+        """Keep the shared list to computers that are actually receiving."""
+        if self.roster is None or ip == self.own_ip:
+            return
+        if receiving:
+            try:
+                self.roster.upsert(ip, port, name, "network")
+                self.roster.set_speakers(ip, port, selected)
+            except Exception:
+                return
+            return
+        try:
+            self.roster.drop_network(ip, port)
+        except Exception:
+            return

@@ -23,6 +23,7 @@ class Destination:
     send_error: str = ""
     volume: int = 100
     name_locked: bool = False
+    speaker_ids: tuple[str, ...] = ()
 
 
 class Roster:
@@ -34,6 +35,7 @@ class Roster:
         self._items: dict[tuple[str, int], Destination] = {}
         self.last_event = ""
         self.master_volume = 100
+        self.playback: list[str] = ["default"]
 
     def load(self) -> None:
         if self.path is None or not self.path.exists():
@@ -43,6 +45,9 @@ class Roster:
         except (OSError, json.JSONDecodeError):
             return
         self.master_volume = clamp_volume(raw.get("volume", 100))
+        playback = raw.get("playback")
+        if isinstance(playback, list) and playback:
+            self.playback = [str(item) for item in playback][:16]
         for item in raw.get("devices", []):
             try:
                 self.upsert(
@@ -54,6 +59,7 @@ class Roster:
                     announce=False,
                     volume=item.get("volume", 100),
                     name_locked=bool(item.get("name_locked", False)),
+                    speaker_ids=item.get("speakers") or (),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
@@ -64,6 +70,7 @@ class Roster:
         with self._lock:
             payload = {
                 "volume": self.master_volume,
+                "playback": list(self.playback),
                 "devices": [
                     {
                         "ip": item.ip,
@@ -72,6 +79,7 @@ class Roster:
                         "source": item.source,
                         "volume": item.volume,
                         "name_locked": item.name_locked,
+                        "speakers": list(item.speaker_ids),
                     }
                     for item in self._items.values()
                 ],
@@ -91,6 +99,7 @@ class Roster:
         announce: bool = True,
         volume: int | None = None,
         name_locked: bool | None = None,
+        speaker_ids=(),
     ) -> Destination:
         check_port(port, "UDP port")
         ip = _ipv4(host)
@@ -112,6 +121,7 @@ class Roster:
                     last_seen=now,
                     volume=clamp_volume(100 if volume is None else volume),
                     name_locked=bool(name_locked),
+                    speaker_ids=_speaker_ids(speaker_ids),
                 )
                 self._items[key] = existing
                 created = True
@@ -160,6 +170,18 @@ class Roster:
             if item is not None:
                 item.volume = level
 
+    def set_speakers(self, ip: str, port: int, speaker_ids) -> None:
+        ids = _speaker_ids(speaker_ids) or ("default",)
+        with self._lock:
+            item = self._items.get((ip, port))
+            if item is not None:
+                item.speaker_ids = ids
+
+    def set_playback(self, speaker_ids) -> None:
+        ids = [item for item in _speaker_ids(speaker_ids)]
+        with self._lock:
+            self.playback = ids or ["default"]
+
     def set_master_volume(self, volume: int) -> None:
         with self._lock:
             self.master_volume = clamp_volume(volume)
@@ -167,6 +189,17 @@ class Roster:
     def master_volume_value(self) -> int:
         with self._lock:
             return self.master_volume
+
+    def drop_network(self, ip: str, port: int) -> bool:
+        """Remove a computer that was found on the network. A typed-in computer stays."""
+        with self._lock:
+            item = self._items.get((ip, port))
+            if item is None or item.source != "network":
+                return False
+            self._items.pop((ip, port), None)
+            self.last_event = f"Removed {ip}."
+        self.save()
+        return True
 
     def remove(self, ip: str, port: int) -> None:
         with self._lock:
@@ -198,6 +231,7 @@ class Roster:
                     send_error=item.send_error,
                     volume=item.volume,
                     name_locked=item.name_locked,
+                    speaker_ids=item.speaker_ids,
                 )
                 for item in self._items.values()
             ]
@@ -216,10 +250,15 @@ class Roster:
                     "online": online,
                     "send_error": item.send_error,
                     "volume": item.volume,
+                    "speakers": list(item.speaker_ids) or ["default"],
                 }
             )
         rows.sort(key=lambda row: (row["name"].lower(), row["ip"], row["port"]))
         return rows
+
+
+def default_pc2_roster_path() -> Path:
+    return default_roster_path().with_name("pc2-devices.json")
 
 
 def default_roster_path() -> Path:
@@ -227,6 +266,19 @@ def default_roster_path() -> Path:
         root = os.environ.get("APPDATA") or str(Path.home())
         return Path(root) / "audiostream" / "pc1-devices.json"
     return Path.home() / ".config" / "audiostream" / "pc1-devices.json"
+
+
+def _speaker_ids(value) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return ()
+    ids = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in ids:
+            ids.append(text[:32])
+    return tuple(ids[:16])
 
 
 def clamp_volume(value) -> int:

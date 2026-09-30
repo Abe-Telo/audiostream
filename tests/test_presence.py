@@ -71,6 +71,32 @@ def test_pc2_join_adds_itself_to_pc1():
     assert row["port"] == 45123
 
 
+def test_a_receiver_shows_up_and_drops_off_when_it_stops():
+    roster = Roster(None)
+    service = PresenceService(roster, "Office", port=0, own_ip="10.0.0.1")
+    service._handle(
+        {"kind": "hello", "name": "Kitchen", "port": 45123, "receiving": True},
+        ("192.168.1.198", 45127),
+    )
+    assert roster.snapshot()[0]["name"] == "Kitchen"
+    service._handle(
+        {"kind": "hello", "name": "Kitchen", "port": 45123, "receiving": False},
+        ("192.168.1.198", 45127),
+    )
+    assert roster.snapshot() == []
+
+
+def test_a_typed_in_computer_stays_when_it_is_not_receiving():
+    roster = Roster(None)
+    roster.upsert("192.168.1.198", 45123, "Kitchen", "manual")
+    service = PresenceService(roster, "Office", port=0, own_ip="10.0.0.1")
+    service._handle(
+        {"kind": "hello", "name": "Kitchen", "port": 45123, "receiving": False},
+        ("192.168.1.198", 45127),
+    )
+    assert roster.snapshot()[0]["name"] == "Kitchen"
+
+
 def test_presence_hello_roundtrip():
     raw = encode_presence({"kind": "hello", "name": "Kitchen", "port": 45123})
     assert decode_presence(raw) == {"kind": "hello", "name": "Kitchen", "port": 45123}

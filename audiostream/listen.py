@@ -34,16 +34,20 @@ class Listener:
         thread = self._thread
         return thread is not None and thread.is_alive()
 
-    def start(self, device: str | None) -> None:
+    def start(self, device: str | None | list = None) -> None:
         if self.running:
             return
+        if device is None or isinstance(device, str):
+            devices: list[str | None] = [device]
+        else:
+            devices = list(device) or [None]
         self._stop.clear()
         with self.stats.lock:
             self.stats.phase = "starting"
             self.stats.error = ""
             self.stats.source = ""
             self.stats.detail = ""
-        self._thread = threading.Thread(target=self._run, args=(device,), name="audiostream-listen", daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(devices,), name="audiostream-listen", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -59,7 +63,7 @@ class Listener:
             if self.stats.phase != "error":
                 self.stats.phase = "stopped"
 
-    def _run(self, device: str | None) -> None:
+    def _run(self, devices: list[str | None]) -> None:
         if sys.platform != "win32":
             with self.stats.lock:
                 self.stats.phase = "error"
@@ -68,20 +72,26 @@ class Listener:
         from audiostream.presence import SenderJoiner
         from audiostream.win_audio import open_output
 
-        try:
-            player = open_output(device, 48000, 2, 480)
-        except Exception as exc:
+        outputs = []
+        errors = []
+        for device in devices:
+            try:
+                outputs.append({"device": device, "player": open_output(device, 48000, 2, 480)})
+            except Exception as exc:
+                errors.append(str(exc))
+        if not outputs:
             with self.stats.lock:
                 self.stats.phase = "error"
-                self.stats.error = str(exc)
+                self.stats.error = errors[0] if errors else "No playback device found."
             return
-        self._player = player
-        live = {"player": player}
+        self._player = outputs[0]["player"]
+        live = {"outputs": outputs}
         self._live = live
         try:
             sock = receiver_socket("0.0.0.0", self.port)
         except Exception as exc:
-            player.close()
+            for item in outputs:
+                item["player"].close()
             self._player = None
             self._live = None
             with self.stats.lock:
@@ -103,9 +113,9 @@ class Listener:
         recv.start()
         with self.stats.lock:
             self.stats.phase = "waiting"
-            self.stats.detail = player.name
+            self.stats.detail = ", ".join(item["player"].name for item in outputs)
         try:
-            _play(live, device, holder, state_lock, self.stats, self._stop)
+            _play(live, holder, state_lock, self.stats, self._stop)
         except Exception as exc:
             if not self._stop.is_set():
                 with self.stats.lock:
@@ -116,10 +126,11 @@ class Listener:
             beacon.stop()
             joiner.stop()
             sock.close()
-            try:
-                live["player"].close()
-            except Exception:
-                pass
+            for item in live.get("outputs", []):
+                try:
+                    item["player"].close()
+                except Exception:
+                    pass
             self._player = None
             self._live = None
             recv.join(timeout=1.0)
@@ -152,7 +163,7 @@ def _receive(sock, holder: dict, lock: threading.Lock, stats: ListenStats, stop:
                 stats.phase = "playing"
 
 
-def _play(live: dict, device: str | None, holder: dict, lock: threading.Lock, stats: ListenStats, stop: threading.Event) -> None:
+def _play(live: dict, holder: dict, lock: threading.Lock, stats: ListenStats, stop: threading.Event) -> None:
     opened_gen = -1
     while not stop.is_set():
         with lock:
@@ -162,17 +173,25 @@ def _play(live: dict, device: str | None, holder: dict, lock: threading.Lock, st
         if jitter is None or not ready:
             time.sleep(0.05)
             continue
-        current = live["player"]
+        outputs = live["outputs"]
         if generation != opened_gen:
-            if jitter.sample_rate != current.sample_rate or jitter.channels != current.channels:
-                try:
-                    current.close()
-                except Exception:
-                    pass
-                from audiostream.win_audio import open_output
+            from audiostream.win_audio import open_output
 
-                current = open_output(device, jitter.sample_rate, jitter.channels, max(1, jitter.sample_rate // 100))
-                live["player"] = current
+            refreshed = []
+            for item in outputs:
+                current = item["player"]
+                if jitter.sample_rate != current.sample_rate or jitter.channels != current.channels:
+                    device = item["device"]
+                    try:
+                        current.close()
+                    except Exception:
+                        pass
+                    current = open_output(
+                        device, jitter.sample_rate, jitter.channels, max(1, jitter.sample_rate // 100)
+                    )
+                refreshed.append({"device": item["device"], "player": current})
+            live["outputs"] = refreshed
+            outputs = refreshed
             opened_gen = generation
         block = max(1, jitter.sample_rate // 100)
         with lock:
@@ -183,7 +202,8 @@ def _play(live: dict, device: str | None, holder: dict, lock: threading.Lock, st
         if pcm is None:
             time.sleep(0.005)
             continue
-        current.write(pcm, src_channels=channels)
+        for item in outputs:
+            item["player"].write(pcm, src_channels=channels)
         with stats.lock:
             stats.phase = "playing"
-            stats.detail = current.name
+            stats.detail = ", ".join(item["player"].name for item in outputs)

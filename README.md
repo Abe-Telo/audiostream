@@ -66,7 +66,9 @@ Choose **Start sending**. One capture is sent to every computer in the list. Rem
 
 **Volume** next to the sound list is the level for every computer. Each computer in the list also has its own slider. Click a computer's name to rename it. **Receiver** plays incoming audio on this PC, on the default speakers.
 
-**Add computer** looks on the network for other PCs running Audiostream and lists them. Pick one, or type an IP address. A computer you add shows up on the other PCs that are running Audiostream too. That uses UDP **45127**.
+**Add computer** looks on the network for other PCs running Audiostream and lists them. Pick one, or type an IP address. A computer you add shows up on the other PCs that are running Audiostream too. Computers that are receiving also show up on their own, on both the PC1 and PC2 windows. That uses UDP **45127**.
+
+**Edit**, on the right of a computer, chooses which speakers play the stream. More than one speaker can be checked.
 
 Right-click the tray icon for **Open**, **Add to startup** (a check mark when Windows will open Audiostream at sign-in), **Volume**, and **Quit**.
 
