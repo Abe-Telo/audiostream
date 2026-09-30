@@ -48,17 +48,6 @@ def beeps_s16le(sample_rate: int = 48000, channels: int = 2) -> bytes:
     return samples.tobytes()
 
 
-def fade_s16le(pcm: bytes, gain: float) -> bytes:
-    """Scale interleaved s16le samples. Used to hide a lost packet without a click."""
-    usable = len(pcm) - (len(pcm) % 2)
-    if usable <= 0:
-        return b""
-    samples = array.array("h")
-    samples.frombytes(pcm[:usable])
-    faded = array.array("h", (max(-32768, min(32767, int(sample * gain))) for sample in samples))
-    return faded.tobytes()
-
-
 def peak_s16le(pcm: bytes) -> float:
     """Peak absolute sample in the range 0..1."""
     usable = len(pcm) - (len(pcm) % 2)

@@ -43,22 +43,6 @@ def seq_delta(a: int, b: int) -> int:
     return delta
 
 
-def repair_copies(history: list[bytes], packet: bytes) -> list[bytes]:
-    """Current packet, then earlier ones so a single Wi-Fi drop can still arrive in time.
-
-    The repeats are a few packets behind, not a second copy in the same burst.
-    """
-    history.append(packet)
-    if len(history) > 24:
-        del history[:-24]
-    copies = [packet]
-    for lag in (4, 8):
-        index = len(history) - 1 - lag
-        if index >= 0:
-            copies.append(history[index])
-    return copies
-
-
 def frames_per_packet(sample_rate: int, chunk_ms: int, channels: int) -> int:
     """How many frames to put in one datagram.
 
@@ -130,7 +114,6 @@ class JitterBuffer:
         channels: int,
         buffer_ms: int,
         frames_per_packet: int,
-        conceal: bool = False,
     ) -> None:
         if sample_rate < 1 or channels < 1 or frames_per_packet < 1:
             raise ValueError("sample rate, channels, and frames_per_packet must be positive")
@@ -152,8 +135,6 @@ class JitterBuffer:
         self.missing = 0
         self.underruns = 0
         self.resyncs = 0
-        self.conceal = conceal
-        self._last_good = b""
 
     def push(self, packet: Packet) -> str:
         if packet.sample_rate != self.sample_rate or packet.channels != self.channels:
@@ -210,7 +191,7 @@ class JitterBuffer:
             if packet is None:
                 assert self._next is not None
                 if self._has_later(self._next):
-                    packet = self._fill_gap()
+                    packet = b"\x00" * (self.frames_per_packet * self.bytes_per_frame)
                     self.missing += 1
                     self._next = (self._next + 1) & 0xFFFFFFFF
                 else:
@@ -219,23 +200,12 @@ class JitterBuffer:
                     out.extend(b"\x00" * (need - len(out)))
                     return bytes(out)
             else:
-                self._last_good = packet
                 self._next = (self._next + 1) & 0xFFFFFFFF
             out += packet
         if len(out) > need:
             self._carry = bytes(out[need:])
             del out[need:]
         return bytes(out)
-
-    def _fill_gap(self) -> bytes:
-        size = self.frames_per_packet * self.bytes_per_frame
-        if not self.conceal or len(self._last_good) != size:
-            return b"\x00" * size
-        from audiostream.pcm import fade_s16le
-
-        faded = fade_s16le(self._last_good, 0.65)
-        self._last_good = faded
-        return faded
 
     def buffered_frames(self) -> int:
         carry = len(self._carry) // self.bytes_per_frame

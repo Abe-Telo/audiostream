@@ -1,23 +1,3 @@
-# Audiostream Room
-
-This branch is the **Python app**. The Windows exe release stays as it is: [Audiostream 0.3.0](https://github.com/Abe-Telo/audiostream/releases/tag/v0.3.0) (`AudiostreamPC1.exe` and `AudiostreamPC2.exe`). New work happens here, in Audiostream Room, until it is ready to become an exe.
-
-## Run it
-
-On every computer, download this branch, unzip it, and double-click `Audiostream.bat`.
-
-The window asks: is this computer the **receiver** or the **sender**?
-
-- Only one computer sends at a time. Everyone else plays that sound.
-- Another computer can click **Send audio**. It asks: "Are you sure you want to start sending? This will stop music from {that computer}." Yes stops the old sender and starts this one.
-- Pick the speaker under **Play on**. A paired Bluetooth speaker is in that list.
-- **Speakers and Bluetooth** shows the devices on every computer in the room. You can set the volume, mute, or disconnect. **Pair a Bluetooth device** pairs one to the computer you are sitting at.
-- Closing the window leaves the app in the tray by the clock. Right-click the icon and choose **Quit** to stop it.
-
-Audio is 48 kHz stereo. Each packet is sent again a moment later, and playback waits 300 ms, so a dropped Wi-Fi packet does not turn into a click.
-
-The sections below describe the earlier sender and receiver commands. `Audiostream.bat` is the app to use.
-
 # audiostream
 
 Stream the whole system audio mix from one PC to another over the local network, and play it on a speaker you pick — including a Bluetooth speaker or headphones the operating system already connected.
