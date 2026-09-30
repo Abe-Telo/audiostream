@@ -34,9 +34,24 @@ python -m audiostream receiver --device 1 --test-tone
 
 `--device` takes the number from the list, starting at **1**, or a unique part of the name. The first output is `--device 1`. If you only have one playback device, that is device 1. With no `--device`, the receiver prints the list and asks you to type a number. If stdin is not a terminal, pass `--device`.
 
+The receiver adds this PC to a sender running the Audiostream window on the same network. Leave that on. Use `--no-join` only if you want to type the IP on PC1 instead.
+
 Default listen port is UDP **45123**, bound to all interfaces. The jitter buffer defaults to **120 ms**.
 
-## Run the sender (PC1)
+## PC1 window
+
+On PC1, double-click `PC1.bat` (or `sender.bat`). It installs the Windows audio library, then opens a window.
+
+The window sends this computer's sound to every PC in the list. Add as many as you want:
+
+- Start the receiver on another PC on the same network. It shows up on its own.
+- Or click **Add computer** and type its IP address, for example `192.168.1.198`.
+
+Choose **Start sending**. One capture is sent to every computer in the list. Remove a computer when it should stop hearing this PC. The list is saved and comes back the next time you open the window.
+
+When Windows asks, allow Python on private networks. PC1 listens for other computers on UDP **45124** and **45125**. Each PC2 still receives the audio on UDP **45123**.
+
+The command line still works when you want one destination and no window:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -44,9 +59,7 @@ python -m audiostream sender --list-devices
 python -m audiostream sender --host 192.168.1.198
 ```
 
-On PC1 you can also double-click `sender.bat`. It installs the Windows library, then sends to 192.168.1.198.
-
-`--host` is the receiver's LAN address (the IP flag is the path that always works). The sender captures the monitor of the default output, which is the system mix, not the microphone. Pick another output's loopback with `--device` if you need to.
+`--host` is the receiver's LAN address. The sender captures the system mix, not the microphone. Pick another loopback with `--device` if you need to.
 
 To find the receiver without typing an IP, leave the receiver's discovery beacon on (the default) and start the sender with:
 
@@ -58,7 +71,7 @@ The beacon is a UDP broadcast on port **45124**. If the network blocks broadcast
 
 ## Firewall
 
-On PC2, allow inbound UDP **45123** (and **45124** if you use `--discover`). On Windows, allow Python on private networks when the firewall prompt appears. On Linux, open those ports in `ufw` or firewalld if a host firewall is enabled.
+On PC2, allow inbound UDP **45123**. On PC1, allow inbound UDP **45124** and **45125** so other computers can add themselves. On Windows, allow Python on private networks when the firewall prompt appears. On Linux, open those ports in `ufw` or firewalld if a host firewall is enabled.
 
 If the receiver stays on `Waiting for the sender` while the sender's packet counter climbs, the packets are not arriving: wrong IP, or the firewall is dropping UDP.
 

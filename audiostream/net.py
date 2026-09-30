@@ -39,6 +39,18 @@ def check_port(port: int, label: str) -> None:
         raise NetworkError(f"{label} must be between 1 and 65535 (got {port})")
 
 
+def lan_ipv4() -> str:
+    """IPv4 address this computer uses to reach the local network."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
+
+
 def resolve_ipv4(host: str) -> str:
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)

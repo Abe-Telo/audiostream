@@ -78,10 +78,20 @@ def run_receiver(args) -> None:
     stop = threading.Event()
     state = _StreamState()
     beacon: BeaconSender | None = None
+    joiner = None
     if not args.no_discover:
         beacon = BeaconSender(args.port, args.discovery_port, socket.gethostname())
         beacon.start()
         print(f"Discovery beacon on UDP {args.discovery_port}", flush=True)
+    if not args.no_join:
+        from audiostream.presence import SenderJoiner
+
+        joiner = SenderJoiner(args.port, socket.gethostname())
+        joiner.start()
+        if joiner.error:
+            print(f"warning: {joiner.error}", flush=True)
+        else:
+            print("This PC will add itself to an Audiostream sender on the network.", flush=True)
     print(
         f"Listening on UDP {args.bind}:{args.port}  buffer {args.buffer_ms} ms",
         flush=True,
@@ -106,6 +116,8 @@ def run_receiver(args) -> None:
             beacon.stop()
             if beacon.error:
                 print(f"warning: discovery beacon failed: {beacon.error}", flush=True)
+        if joiner is not None:
+            joiner.stop()
         sock.close()
 
 

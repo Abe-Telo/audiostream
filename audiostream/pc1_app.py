@@ -1,0 +1,349 @@
+"""PC1 window: send this computer's sound to as many other PCs as you add."""
+
+from __future__ import annotations
+
+import socket
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+from audiostream.net import DEFAULT_PORT, lan_ipv4
+from audiostream.presence import CONTROL_PORT, JoinListener, ReceiverWatch, SenderBeacon
+from audiostream.roster import Roster, default_roster_path
+from audiostream.hub import StreamHub, device_argument
+
+
+def run_pc1() -> None:
+    app = Pc1App()
+    app.run()
+
+
+class Pc1App:
+    def __init__(self, roster: Roster | None = None, start_network: bool = True) -> None:
+        self.roster = roster if roster is not None else Roster(default_roster_path())
+        if roster is None:
+            self.roster.load()
+        self.hub = StreamHub(self.roster)
+        self._want_stream = False
+        self._signature: tuple | None = None
+        self.visible_names: list[str] = []
+        self._capture_note = ""
+        self._joins: JoinListener | None = None
+        self._watch: ReceiverWatch | None = None
+        self._beacon: SenderBeacon | None = None
+
+        self.root = tk.Tk()
+        self.root.title("Audiostream")
+        self.root.geometry("700x720")
+        self.root.minsize(560, 560)
+        self.root.configure(bg="#f3f3f3")
+        self._font = "Segoe UI"
+        self._build()
+        if start_network:
+            self._start_network()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.after(250, self._tick)
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+    def close(self) -> None:
+        self._want_stream = False
+        self.hub.stop()
+        for service in (self._joins, self._watch, self._beacon):
+            if service is not None:
+                service.stop()
+        try:
+            self.roster.save()
+        except OSError:
+            pass
+        self.root.destroy()
+
+    def _build(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("vista")
+        except tk.TclError:
+            style.theme_use("clam")
+        for name, options in (
+            ("TFrame", {"background": "#f3f3f3"}),
+            ("Card.TFrame", {"background": "#ffffff"}),
+            ("TLabel", {"background": "#f3f3f3", "foreground": "#1a1a1a", "font": (self._font, 10)}),
+            ("Card.TLabel", {"background": "#ffffff", "foreground": "#1a1a1a", "font": (self._font, 10)}),
+            ("Muted.TLabel", {"background": "#ffffff", "foreground": "#5d5d5d", "font": (self._font, 9)}),
+            ("Title.TLabel", {"background": "#f3f3f3", "foreground": "#1a1a1a", "font": (self._font, 20)}),
+            ("TButton", {"font": (self._font, 10), "padding": (10, 6)}),
+            ("TLabelframe", {"background": "#ffffff"}),
+            ("TLabelframe.Label", {"background": "#f3f3f3", "foreground": "#1a1a1a", "font": (self._font, 10, "bold")}),
+        ):
+            try:
+                style.configure(name, **options)
+            except tk.TclError:
+                pass
+
+        outer = ttk.Frame(self.root, padding=18)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Audiostream", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            outer,
+            text="Send this computer's sound to other PCs on your network. Add as many as you want.",
+        ).pack(anchor="w", pady=(2, 12))
+
+        this_pc = ttk.LabelFrame(outer, text="This computer", padding=12)
+        this_pc.pack(fill="x")
+        ttk.Label(this_pc, text=socket.gethostname(), style="Card.TLabel").pack(anchor="w")
+        self.address_label = ttk.Label(this_pc, text=lan_ipv4(), style="Muted.TLabel")
+        self.address_label.pack(anchor="w")
+
+        sound = ttk.LabelFrame(outer, text="Sound to send", padding=12)
+        sound.pack(fill="x", pady=(12, 0))
+        self.capture_var = tk.StringVar()
+        self.capture_box = ttk.Combobox(sound, textvariable=self.capture_var, state="readonly")
+        self.capture_box.pack(fill="x", side="left", expand=True)
+        ttk.Button(sound, text="Refresh", command=self._load_capture_devices).pack(side="left", padx=(8, 0))
+        self._load_capture_devices()
+
+        controls = ttk.Frame(outer)
+        controls.pack(fill="x", pady=12)
+        self.start_button = ttk.Button(controls, text="Start sending", command=self._toggle)
+        self.start_button.pack(side="left")
+        self.state_label = ttk.Label(controls, text="Not sending.", wraplength=420)
+        self.state_label.pack(side="left", padx=(12, 0))
+
+        meter_row = ttk.Frame(outer)
+        meter_row.pack(fill="x")
+        ttk.Label(meter_row, text="Level").pack(side="left")
+        self.meter = tk.Canvas(meter_row, height=12, bg="#e6e6e6", highlightthickness=0)
+        self.meter.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.meter_fill = self.meter.create_rectangle(0, 0, 0, 12, fill="#0f7b0f", width=0)
+
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(16, 6))
+        self.count_label = ttk.Label(header, text="Other computers", font=(self._font, 11, "bold"))
+        self.count_label.pack(side="left")
+        ttk.Button(header, text="Add computer", command=self._add_dialog).pack(side="right")
+
+        ttk.Label(
+            outer,
+            text="A receiver on this network adds itself. You can also type its IP address.",
+        ).pack(side="bottom", anchor="w")
+        self.event_label = ttk.Label(outer, text="")
+        self.event_label.pack(side="bottom", anchor="w", pady=(8, 0))
+
+        list_card = tk.Frame(outer, bg="#ffffff", highlightbackground="#d0d0d0", highlightthickness=1)
+        list_card.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(list_card, bg="#ffffff", height=220, highlightthickness=0)
+        scroll = ttk.Scrollbar(list_card, orient="vertical", command=self.canvas.yview)
+        self.list_frame = tk.Frame(self.canvas, bg="#ffffff")
+        self.list_frame.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.list_frame, anchor="nw", tags="inner")
+        self.canvas.configure(yscrollcommand=scroll.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure("inner", width=event.width))
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Button-4>", lambda _event: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda _event: self.canvas.yview_scroll(1, "units"))
+        self.refresh_devices()
+
+    def _wheel(self, event) -> None:
+        self.canvas.yview_scroll(int(-event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+
+    def _load_capture_devices(self) -> None:
+        from audiostream.audio import AudioError, list_loopback_devices
+
+        labels = ["Default playback"]
+        try:
+            for device in list_loopback_devices():
+                labels.append(f"{device.index}  {device.name}")
+        except AudioError as exc:
+            self.capture_var.set("Default playback")
+            self.capture_box.configure(values=labels)
+            self._capture_note = str(exc)
+            return
+        self._capture_note = ""
+        self.capture_box.configure(values=labels)
+        if not self.capture_var.get():
+            self.capture_var.set(labels[0])
+
+    def _start_network(self) -> None:
+        self._joins = JoinListener(self.roster, CONTROL_PORT)
+        self._watch = ReceiverWatch(self.roster)
+        self._joins.start()
+        self._watch.start()
+        if self._joins.error:
+            self.roster.last_event = self._joins.error
+        elif self._watch.error:
+            self.roster.last_event = self._watch.error
+        if not self._joins.error:
+            self._beacon = SenderBeacon(socket.gethostname(), control_port=self._joins.bound_port)
+            self._beacon.start()
+
+    def _toggle(self) -> None:
+        if self._want_stream:
+            self._want_stream = False
+            self.hub.stop()
+            self.capture_box.configure(state="readonly")
+            return
+        self._want_stream = True
+        self.capture_box.configure(state="disabled")
+        with self.hub.stats.lock:
+            self.hub.stats.error = ""
+        self.hub.start(device_argument(self.capture_var.get()))
+
+    def _add_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add computer")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg="#f3f3f3")
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Name").grid(row=0, column=0, sticky="w")
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(frame, textvariable=name_var, width=32)
+        name_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(frame, text="IP address").grid(row=2, column=0, sticky="w")
+        ip_var = tk.StringVar()
+        ip_entry = ttk.Entry(frame, textvariable=ip_var, width=32)
+        ip_entry.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(frame, text="Port").grid(row=4, column=0, sticky="w")
+        port_var = tk.StringVar(value=str(DEFAULT_PORT))
+        ttk.Entry(frame, textvariable=port_var, width=32).grid(row=5, column=0, sticky="ew", pady=(0, 12))
+
+        def submit() -> None:
+            try:
+                port = int(port_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Add computer", "Port must be a number.", parent=dialog)
+                return
+            try:
+                self.roster.upsert(ip_var.get(), port, name_var.get(), "manual")
+            except Exception as exc:
+                messagebox.showerror("Add computer", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self.refresh_devices()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=6, column=0, sticky="e")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Add", command=submit).pack(side="right", padx=(0, 8))
+        dialog.bind("<Return>", lambda _event: submit())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        ip_entry.focus_set()
+        dialog.update_idletasks()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 80}+{self.root.winfo_rooty() + 80}")
+
+    def refresh_devices(self) -> None:
+        rows = self.roster.snapshot()
+        self.visible_names = [row["name"] for row in rows]
+        signature = (
+            self._want_stream,
+            tuple(
+                (row["ip"], row["port"], row["name"], row["source"], row["online"], row["send_error"]) for row in rows
+            ),
+        )
+        count = len(rows)
+        noun = "computer" if count == 1 else "computers"
+        self.count_label.configure(text=f"Other computers  ·  {count} {noun}" if count else "Other computers")
+        if signature == self._signature:
+            return
+        self._signature = signature
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        if not rows:
+            tk.Label(
+                self.list_frame,
+                text=(
+                    "No other computers yet.\n\n"
+                    "Start the receiver on the other PC. It will show up here on its own.\n"
+                    "Or click Add computer and type its IP address, for example 192.168.1.198."
+                ),
+                bg="#ffffff",
+                fg="#5d5d5d",
+                justify="left",
+                anchor="w",
+                font=(self._font, 10),
+                padx=14,
+                pady=14,
+            ).pack(fill="x")
+            return
+        sending = self._want_stream
+        for row in rows:
+            line = tk.Frame(self.list_frame, bg="#ffffff")
+            line.pack(fill="x", padx=12, pady=8)
+            line.columnconfigure(0, weight=1)
+            tk.Label(line, text=row["name"], bg="#ffffff", fg="#1a1a1a", font=(self._font, 11, "bold")).grid(
+                row=0, column=0, sticky="w"
+            )
+            detail = f"{row['ip']}:{row['port']}    {_row_status(row, sending)}"
+            tk.Label(line, text=detail, bg="#ffffff", fg="#5d5d5d", font=(self._font, 9)).grid(
+                row=1, column=0, sticky="w"
+            )
+            tk.Button(
+                line,
+                text="Remove",
+                command=lambda ip=row["ip"], port=row["port"]: self._remove(ip, port),
+                relief="flat",
+                bg="#ffffff",
+                fg="#c42b1c",
+                activeforeground="#c42b1c",
+                font=(self._font, 9),
+                cursor="hand2",
+            ).grid(row=0, column=1, rowspan=2, sticky="e")
+            tk.Frame(self.list_frame, bg="#eeeeee", height=1).pack(fill="x", padx=12)
+
+    def _remove(self, ip: str, port: int) -> None:
+        self.roster.remove(ip, port)
+        self.refresh_devices()
+
+    def _tick(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        thread = self.hub._thread
+        with self.hub.stats.lock:
+            running = self.hub.stats.running
+            error = self.hub.stats.error
+            peak = self.hub.stats.peak
+            sent = self.hub.stats.sent
+            capture = self.hub.stats.capture
+            rate = self.hub.stats.rate
+        if self._want_stream and error and thread is not None and not thread.is_alive() and not running:
+            self._want_stream = False
+            self.capture_box.configure(state="readonly")
+        if self._want_stream:
+            self.start_button.configure(text="Stop sending")
+        else:
+            self.start_button.configure(text="Start sending")
+        if error and not running:
+            self.state_label.configure(text=error)
+        elif running:
+            self.state_label.configure(text=f"Sending from {capture} at {rate} Hz. {sent} packets.")
+        elif self._want_stream:
+            self.state_label.configure(text="Starting...")
+        elif self._capture_note:
+            self.state_label.configure(text=self._capture_note)
+        else:
+            self.state_label.configure(text="Not sending.")
+        width = max(self.meter.winfo_width(), 1)
+        level = min(1.0, max(0.0, peak))
+        self.meter.coords(self.meter_fill, 0, 0, width * level, 12)
+        self.event_label.configure(text=self.roster.last_event)
+        self.refresh_devices()
+        try:
+            self.root.after(250, self._tick)
+        except tk.TclError:
+            return
+
+
+def _row_status(row: dict, sending: bool) -> str:
+    if row["send_error"]:
+        return "Can't reach this computer"
+    if sending:
+        return "Sending"
+    if row["source"] == "network" and row["online"]:
+        return "Joined from the network"
+    if row["source"] == "network":
+        return "Joined earlier"
+    return "Added by you"

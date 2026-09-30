@@ -19,6 +19,17 @@ def main(argv: list[str] | None = None) -> int:
             from audiostream.sender import run_sender
 
             run_sender(args)
+        elif args.cmd == "pc1":
+            try:
+                from audiostream.pc1_app import run_pc1
+            except ImportError as exc:
+                print(
+                    "error: the PC1 window needs tkinter, which is included with python.org Python.\n"
+                    f"Details: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            run_pc1()
         else:
             from audiostream.receiver import run_receiver
 
@@ -36,8 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="audiostream",
         description=(
-            "Stream all system audio from this PC to another PC on the LAN, "
-            "and play it on a selected output (including a paired Bluetooth device)."
+            "Stream this PC's system audio to other computers on the local network."
         ),
     )
     parser.add_argument("--version", action="version", version=f"audiostream {__version__}")
@@ -90,12 +100,19 @@ def build_parser() -> argparse.ArgumentParser:
     receiver.add_argument("--sample-rate", type=int, default=48000, help="Sample rate used for the test tone")
     receiver.add_argument("--channels", type=int, default=2, help="Channels used for the test tone")
     receiver.add_argument("--no-discover", action="store_true", help="Do not broadcast a discovery beacon")
+    receiver.add_argument(
+        "--no-join",
+        action="store_true",
+        help="Do not add this PC to a sender that is open on the network",
+    )
     receiver.add_argument("--discovery-port", type=int, default=DEFAULT_DISCOVERY_PORT)
+
+    sub.add_parser("pc1", help="Open the PC1 window and send to every computer you add")
     return parser
 
 
 def _validate(args) -> None:
-    if args.list_devices:
+    if args.cmd == "pc1" or args.list_devices:
         return
     if args.cmd == "sender":
         if args.sample_rate < 8000 or args.sample_rate > 192000:
