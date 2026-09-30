@@ -38,6 +38,12 @@ def decode_sender_beacon(data: bytes) -> tuple[int, str] | None:
     return _unpack(SENDER_MAGIC, data)
 
 
+def _is_this_computer(ip: str) -> bool:
+    """True for this PC's LAN address. 127.0.0.1 still counts as another socket in tests."""
+    own = lan_ipv4()
+    return bool(own) and own != "127.0.0.1" and ip == own
+
+
 def _pack(magic: bytes, port: int, name: str) -> bytes:
     if not 1 <= port <= 65535:
         raise ValueError(f"port out of range: {port}")
@@ -103,6 +109,8 @@ class JoinListener:
                 if decoded is None:
                     continue
                 stream_port, name = decoded
+                if _is_this_computer(addr[0]):
+                    continue
                 try:
                     self.roster.upsert(addr[0], stream_port, name or addr[0], "network", persist=True)
                 except Exception:
@@ -261,6 +269,8 @@ class SenderJoiner:
                         return
                     continue
                 decoded = decode_sender_beacon(data) if data else None
+                if decoded is not None and _is_this_computer(addr[0]):
+                    decoded = None
                 if decoded is not None and self.sender is None:
                     control_port, name = decoded
                     self.sender = (addr[0], control_port, name or addr[0])

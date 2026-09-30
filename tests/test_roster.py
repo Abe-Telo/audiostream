@@ -33,6 +33,27 @@ def test_remove_computer():
     assert roster.snapshot() == []
 
 
+def test_rename_sticks_when_the_computer_announces_again():
+    roster = Roster(None)
+    roster.upsert("192.168.1.198", 45123, "Living room", "network")
+    roster.rename("192.168.1.198", 45123, "Den")
+    roster.upsert("192.168.1.198", 45123, "Living room", "network")
+    assert roster.snapshot()[0]["name"] == "Den"
+
+
+def test_volume_is_saved(tmp_path):
+    path = tmp_path / "devices.json"
+    roster = Roster(path)
+    roster.upsert("192.168.1.198", 45123, "Living room", "manual")
+    roster.set_master_volume(40)
+    roster.set_volume("192.168.1.198", 45123, 25)
+    roster.save()
+    again = Roster(path)
+    again.load()
+    assert again.master_volume_value() == 40
+    assert again.snapshot()[0]["volume"] == 25
+
+
 def test_bad_address_is_rejected():
     roster = Roster(None)
     with pytest.raises(ValueError):

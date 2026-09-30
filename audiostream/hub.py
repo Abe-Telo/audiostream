@@ -8,7 +8,7 @@ import time
 
 from audiostream.net import sender_socket
 from audiostream.packet import encode_packet, frames_per_packet
-from audiostream.pcm import peak_s16le
+from audiostream.pcm import peak_s16le, scale_s16le
 from audiostream.roster import Roster
 
 
@@ -98,8 +98,11 @@ class StreamHub:
                 peak = max(peak, peak_s16le(pcm))
                 destinations = self.roster.destinations()
                 if destinations:
-                    packet = encode_packet(sequence, pcm, capture.sample_rate, self.channels)
+                    master = self.roster.master_volume_value() / 100.0
+                    cache: dict[str, bytes] = {}
                     for dest in destinations:
+                        gain = master * (dest.volume / 100.0)
+                        packet = packet_for_gain(pcm, gain, sequence, capture.sample_rate, self.channels, cache)
                         try:
                             sock.sendto(packet, (dest.ip, dest.port))
                             self.roster.clear_send_error(dest.ip, dest.port)
@@ -142,12 +145,41 @@ def send_pcm_to_roster(sock, pcm: bytes, roster: Roster, sample_rate: int, chann
     destinations = roster.destinations()
     if not destinations or not pcm:
         return 0
-    packet = encode_packet(sequence, pcm, sample_rate, channels)
+    master = roster.master_volume_value() / 100.0
+    cache: dict[str, bytes] = {}
     sent = 0
     for dest in destinations:
+        gain = master * (dest.volume / 100.0)
+        packet = packet_for_gain(pcm, gain, sequence, sample_rate, channels, cache)
         sock.sendto(packet, (dest.ip, dest.port))
         sent += 1
     return sent
+
+
+def packet_for_gain(
+    pcm: bytes,
+    gain: float,
+    sequence: int,
+    sample_rate: int,
+    channels: int,
+    cache: dict[str, bytes],
+) -> bytes:
+    """Encode one chunk. Full volume and silence are encoded once and reused."""
+    if gain >= 0.999:
+        key = "full"
+        payload = pcm
+    elif gain <= 0.001:
+        key = "zero"
+        payload = b"\x00" * (len(pcm) - (len(pcm) % 2))
+    else:
+        key = ""
+        payload = scale_s16le(pcm, gain)
+    if key and key in cache:
+        return cache[key]
+    packet = encode_packet(sequence, payload, sample_rate, channels)
+    if key:
+        cache[key] = packet
+    return packet
 
 
 def open_system_capture(device: str | None, sample_rate: int, channels: int, frames: int):

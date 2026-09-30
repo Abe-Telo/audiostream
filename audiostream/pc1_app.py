@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from audiostream.hub import StreamHub, device_argument
+from audiostream.listen import Listener
 from audiostream.logsetup import ensure_stdio
 from audiostream.net import DEFAULT_PORT, lan_ipv4
 from audiostream.presence import CONTROL_PORT, JoinListener, ReceiverWatch, SenderBeacon
@@ -26,7 +27,9 @@ class Pc1App:
         if roster is None:
             self.roster.load()
         self.hub = StreamHub(self.roster)
+        self.listener = Listener()
         self._want_stream = False
+        self._want_listen = False
         self._signature: tuple | None = None
         self.visible_names: list[str] = []
         self._capture_note = ""
@@ -38,8 +41,8 @@ class Pc1App:
 
         self.root = tk.Tk()
         self.root.title("Audiostream PC1")
-        self.root.geometry("700x720")
-        self.root.minsize(560, 560)
+        self.root.geometry("760x780")
+        self.root.minsize(640, 560)
         self.root.configure(bg="#f3f3f3")
         self._font = "Segoe UI"
         self._build()
@@ -77,7 +80,8 @@ class Pc1App:
 
     def _tray_items(self):
         sending = "Stop sending" if self._want_stream else "Start sending"
-        return [("Open", self.show), (sending, self._toggle), None, ("Quit", self.quit)]
+        receiving = "Stop receiving" if self._want_listen else "Receiver"
+        return [("Open", self.show), (sending, self._toggle), (receiving, self._toggle_receiver), None, ("Quit", self.quit)]
 
     def quit(self) -> None:
         if self._tray is not None:
@@ -86,7 +90,9 @@ class Pc1App:
 
     def close(self) -> None:
         self._want_stream = False
+        self._want_listen = False
         self.hub.stop()
+        self.listener.stop()
         for service in (self._joins, self._watch, self._beacon):
             if service is not None:
                 service.stop()
@@ -137,14 +143,36 @@ class Pc1App:
         self.capture_var = tk.StringVar()
         self.capture_box = ttk.Combobox(sound, textvariable=self.capture_var, state="readonly")
         self.capture_box.pack(fill="x", side="left", expand=True)
-        ttk.Button(sound, text="Refresh", command=self._load_capture_devices).pack(side="left", padx=(8, 0))
+        ttk.Button(sound, text="Refresh", command=self._load_capture_devices).pack(side="right", padx=(8, 0))
+        self.master_percent = ttk.Label(sound, text=f"{self.roster.master_volume}%", style="Card.TLabel", width=5)
+        self.master_percent.pack(side="right")
+        self.master_scale = tk.Scale(
+            sound,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            showvalue=False,
+            length=120,
+            sliderlength=16,
+            width=12,
+            bg="#ffffff",
+            highlightthickness=0,
+            troughcolor="#d0d0d0",
+        )
+        self.master_scale.set(self.roster.master_volume)
+        self.master_scale.configure(command=self._on_master_volume)
+        self.master_scale.bind("<ButtonRelease-1>", lambda _event: self._save_roster())
+        self.master_scale.pack(side="right", padx=(6, 4))
+        ttk.Label(sound, text="Volume", style="Card.TLabel").pack(side="right", padx=(12, 0))
         self._load_capture_devices()
 
         controls = ttk.Frame(outer)
         controls.pack(fill="x", pady=12)
         self.start_button = ttk.Button(controls, text="Start sending", command=self._toggle)
         self.start_button.pack(side="left")
-        self.state_label = ttk.Label(controls, text="Not sending.", wraplength=420)
+        self.receiver_button = ttk.Button(controls, text="Receiver", command=self._toggle_receiver)
+        self.receiver_button.pack(side="left", padx=(8, 0))
+        self.state_label = ttk.Label(controls, text="Not sending.", wraplength=360)
         self.state_label.pack(side="left", padx=(12, 0))
 
         meter_row = ttk.Frame(outer)
@@ -162,7 +190,11 @@ class Pc1App:
 
         ttk.Label(
             outer,
-            text="A receiver on this network adds itself. You can also type its IP address.",
+            text=(
+                "A receiver on this network adds itself. You can also type its IP address. "
+                "Click a name to rename it. The top volume is for every computer, and each row has its own."
+            ),
+            wraplength=700,
         ).pack(side="bottom", anchor="w")
         self.event_label = ttk.Label(outer, text="")
         self.event_label.pack(side="bottom", anchor="w", pady=(8, 0))
@@ -227,6 +259,77 @@ class Pc1App:
         with self.hub.stats.lock:
             self.hub.stats.error = ""
         self.hub.start(device_argument(self.capture_var.get()))
+
+    def _toggle_receiver(self) -> None:
+        if self._want_listen:
+            self._want_listen = False
+            self.listener.stop()
+            self.receiver_button.configure(text="Receiver")
+            return
+        self._want_listen = True
+        self.receiver_button.configure(text="Stop receiving")
+        self.listener.stop()
+        self.listener.start(None)
+
+    def _save_roster(self) -> None:
+        try:
+            self.roster.save()
+        except OSError:
+            pass
+
+    def _on_master_volume(self, value) -> None:
+        from audiostream.roster import clamp_volume
+
+        level = clamp_volume(value)
+        self.roster.set_master_volume(level)
+        if hasattr(self, "master_percent"):
+            self.master_percent.configure(text=f"{level}%")
+
+    def _on_device_volume(self, ip: str, port: int, value, label) -> None:
+        from audiostream.roster import clamp_volume
+
+        level = clamp_volume(value)
+        self.roster.set_volume(ip, port, level)
+        label.configure(text=f"{level}%")
+
+    def _rename_dialog(self, ip: str, port: int) -> None:
+        current = ""
+        for row in self.roster.snapshot():
+            if row["ip"] == ip and row["port"] == port:
+                current = row["name"]
+                break
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Rename computer")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg="#f3f3f3")
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Name").grid(row=0, column=0, sticky="w")
+        name_var = tk.StringVar(value=current)
+        entry = ttk.Entry(frame, textvariable=name_var, width=32)
+        entry.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+
+        def submit() -> None:
+            try:
+                self.roster.rename(ip, port, name_var.get())
+            except Exception as exc:
+                messagebox.showerror("Rename computer", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self.refresh_devices()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, sticky="e")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Save", command=submit).pack(side="right", padx=(0, 8))
+        dialog.bind("<Return>", lambda _event: submit())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        entry.focus_set()
+        entry.select_range(0, "end")
+        dialog.update_idletasks()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 80}+{self.root.winfo_rooty() + 120}")
 
     def _add_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -312,13 +415,51 @@ class Pc1App:
             line = tk.Frame(self.list_frame, bg="#ffffff")
             line.pack(fill="x", padx=12, pady=8)
             line.columnconfigure(0, weight=1)
-            tk.Label(line, text=row["name"], bg="#ffffff", fg="#1a1a1a", font=(self._font, 11, "bold")).grid(
-                row=0, column=0, sticky="w"
+            name = tk.Label(
+                line,
+                text=row["name"],
+                bg="#ffffff",
+                fg="#1a1a1a",
+                font=(self._font, 11, "bold"),
+                cursor="hand2",
             )
+            name.grid(row=0, column=0, sticky="w")
+            name.bind("<Button-1>", lambda _event, ip=row["ip"], port=row["port"]: self._rename_dialog(ip, port))
             detail = f"{row['ip']}:{row['port']}    {_row_status(row, sending)}"
             tk.Label(line, text=detail, bg="#ffffff", fg="#5d5d5d", font=(self._font, 9)).grid(
                 row=1, column=0, sticky="w"
             )
+            percent = tk.Label(
+                line,
+                text=f"{row['volume']}%",
+                bg="#ffffff",
+                fg="#1a1a1a",
+                font=(self._font, 9),
+                width=5,
+                anchor="e",
+            )
+            scale = tk.Scale(
+                line,
+                from_=0,
+                to=100,
+                orient="horizontal",
+                showvalue=False,
+                length=110,
+                sliderlength=16,
+                width=12,
+                bg="#ffffff",
+                highlightthickness=0,
+                troughcolor="#d0d0d0",
+            )
+            scale.set(row["volume"])
+            scale.configure(
+                command=lambda value, ip=row["ip"], port=row["port"], label=percent: self._on_device_volume(
+                    ip, port, value, label
+                )
+            )
+            scale.bind("<ButtonRelease-1>", lambda _event: self._save_roster())
+            scale.grid(row=0, column=1, rowspan=2, sticky="e", padx=(8, 0))
+            percent.grid(row=0, column=2, rowspan=2, sticky="e")
             tk.Button(
                 line,
                 text="Remove",
@@ -329,7 +470,7 @@ class Pc1App:
                 activeforeground="#c42b1c",
                 font=(self._font, 9),
                 cursor="hand2",
-            ).grid(row=0, column=1, rowspan=2, sticky="e")
+            ).grid(row=0, column=3, rowspan=2, sticky="e", padx=(8, 0))
             tk.Frame(self.list_frame, bg="#eeeeee", height=1).pack(fill="x", padx=12)
 
     def _remove(self, ip: str, port: int) -> None:
@@ -355,15 +496,29 @@ class Pc1App:
         else:
             self.start_button.configure(text="Start sending")
         if error and not running:
-            self.state_label.configure(text=error)
+            text = error
         elif running:
-            self.state_label.configure(text=f"Sending from {capture} at {rate} Hz. {sent} packets.")
+            text = f"Sending from {capture} at {rate} Hz. {sent} packets."
         elif self._want_stream:
-            self.state_label.configure(text="Starting...")
+            text = "Starting..."
         elif self._capture_note:
-            self.state_label.configure(text=self._capture_note)
+            text = self._capture_note
         else:
-            self.state_label.configure(text="Not sending.")
+            text = "Not sending."
+        if self._want_listen:
+            with self.listener.stats.lock:
+                phase = self.listener.stats.phase
+                listen_error = self.listener.stats.error
+            self.receiver_button.configure(text="Stop receiving")
+            if listen_error:
+                text = f"{text} {listen_error}"
+            elif phase == "playing":
+                text = f"{text} Playing incoming audio."
+            else:
+                text = f"{text} Listening for a sender."
+        else:
+            self.receiver_button.configure(text="Receiver")
+        self.state_label.configure(text=text)
         width = max(self.meter.winfo_width(), 1)
         level = min(1.0, max(0.0, peak))
         self.meter.coords(self.meter_fill, 0, 0, width * level, 12)

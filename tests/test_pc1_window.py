@@ -73,6 +73,55 @@ def test_closing_the_window_hides_to_the_tray():
         player.quit()
 
 
+def test_receiver_volume_and_rename_controls():
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        probe = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display")
+    probe.destroy()
+
+    from audiostream.pc1_app import Pc1App
+
+    app = Pc1App(roster=Roster(None), start_network=False)
+    try:
+        assert app.receiver_button.cget("text") == "Receiver"
+        assert app.roster.master_volume_value() == 100
+        app.roster.upsert("192.168.1.198", 45123, "Living room", "manual")
+        app.roster.upsert("192.168.1.50", 45123, "Kitchen", "manual")
+        app.refresh_devices()
+        app.root.update_idletasks()
+        scales = _scales(app.list_frame)
+        assert len(scales) == 2
+        assert app.master_scale.cget("command")
+        app.root.tk.call(app.master_scale.cget("command"), 40)
+        assert app.roster.master_volume_value() == 40
+        assert app.master_percent.cget("text") == "40%"
+        app.root.tk.call(scales[0].cget("command"), 25)
+        volumes = {row["name"]: row["volume"] for row in app.roster.snapshot()}
+        assert volumes["Kitchen"] == 25
+        assert volumes["Living room"] == 100
+        app.roster.rename("192.168.1.50", 45123, "Den")
+        app.refresh_devices()
+        labels = [child.cget("text") for child in _labels(app.list_frame)]
+        assert "Den" in labels
+        app._toggle_receiver()
+        assert app.receiver_button.cget("text") == "Stop receiving"
+        app._toggle_receiver()
+        assert app.receiver_button.cget("text") == "Receiver"
+    finally:
+        app.close()
+
+
+def _scales(widget):
+    found = []
+    for child in widget.winfo_children():
+        if child.winfo_class() == "Scale":
+            found.append(child)
+        found.extend(_scales(child))
+    return found
+
+
 def _labels(widget):
     found = []
     for child in widget.winfo_children():

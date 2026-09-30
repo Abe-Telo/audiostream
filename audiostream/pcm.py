@@ -48,6 +48,29 @@ def beeps_s16le(sample_rate: int = 48000, channels: int = 2) -> bytes:
     return samples.tobytes()
 
 
+def scale_s16le(pcm: bytes, gain: float) -> bytes:
+    """Scale interleaved s16le audio. A gain of 1 returns the same bytes."""
+    if gain >= 0.999:
+        return pcm
+    usable = len(pcm) - (len(pcm) % 2)
+    if usable <= 0:
+        return b""
+    if gain <= 0.0:
+        return b"\x00" * usable
+    samples = array.array("h")
+    samples.frombytes(pcm[:usable])
+    factor = float(gain)
+    scaled = array.array("h")
+    for sample in samples:
+        value = int(round(sample * factor))
+        if value > 32767:
+            value = 32767
+        elif value < -32768:
+            value = -32768
+        scaled.append(value)
+    return scaled.tobytes()
+
+
 def peak_s16le(pcm: bytes) -> float:
     """Peak absolute sample in the range 0..1."""
     usable = len(pcm) - (len(pcm) % 2)

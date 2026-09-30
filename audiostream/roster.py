@@ -21,6 +21,8 @@ class Destination:
     source: str  # "manual" or "network"
     last_seen: float = 0.0
     send_error: str = ""
+    volume: int = 100
+    name_locked: bool = False
 
 
 class Roster:
@@ -31,6 +33,7 @@ class Roster:
         self._lock = threading.Lock()
         self._items: dict[tuple[str, int], Destination] = {}
         self.last_event = ""
+        self.master_volume = 100
 
     def load(self) -> None:
         if self.path is None or not self.path.exists():
@@ -39,6 +42,7 @@ class Roster:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        self.master_volume = clamp_volume(raw.get("volume", 100))
         for item in raw.get("devices", []):
             try:
                 self.upsert(
@@ -48,6 +52,8 @@ class Roster:
                     str(item.get("source") or "manual"),
                     persist=False,
                     announce=False,
+                    volume=item.get("volume", 100),
+                    name_locked=bool(item.get("name_locked", False)),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
@@ -57,15 +63,18 @@ class Roster:
             return
         with self._lock:
             payload = {
+                "volume": self.master_volume,
                 "devices": [
                     {
                         "ip": item.ip,
                         "port": item.port,
                         "name": item.name,
                         "source": item.source,
+                        "volume": item.volume,
+                        "name_locked": item.name_locked,
                     }
                     for item in self._items.values()
-                ]
+                ],
             }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
@@ -80,6 +89,8 @@ class Roster:
         source: str,
         persist: bool = True,
         announce: bool = True,
+        volume: int | None = None,
+        name_locked: bool | None = None,
     ) -> Destination:
         check_port(port, "UDP port")
         ip = _ipv4(host)
@@ -93,16 +104,32 @@ class Roster:
             existing = self._items.get(key)
             now = time.time()
             if existing is None:
-                existing = Destination(ip=ip, port=port, name=label, source=source, last_seen=now)
+                existing = Destination(
+                    ip=ip,
+                    port=port,
+                    name=label,
+                    source=source,
+                    last_seen=now,
+                    volume=clamp_volume(100 if volume is None else volume),
+                    name_locked=bool(name_locked),
+                )
                 self._items[key] = existing
                 created = True
             else:
                 existing.last_seen = now
                 existing.send_error = ""
+                if volume is not None and source == "manual":
+                    existing.volume = clamp_volume(volume)
+                if name_locked:
+                    existing.name_locked = True
                 if source == "manual":
                     existing.name = label
                     existing.source = "manual"
-                elif label != ip and (existing.source == "network" or existing.name == existing.ip):
+                elif (
+                    not existing.name_locked
+                    and label != ip
+                    and (existing.source == "network" or existing.name == existing.ip)
+                ):
                     existing.name = label
             if announce and created and source == "network":
                 self.last_event = f"{existing.name} ({existing.ip}) added itself."
@@ -112,6 +139,34 @@ class Roster:
         if persist and (created or source == "manual"):
             self.save()
         return snapshot
+
+    def rename(self, ip: str, port: int, name: str) -> None:
+        label = (name or "").strip()[:64]
+        if not label:
+            raise ValueError("Enter a name.")
+        with self._lock:
+            item = self._items.get((ip, port))
+            if item is None:
+                raise ValueError("That computer is no longer in the list.")
+            item.name = label
+            item.name_locked = True
+            self.last_event = f"Renamed to {label}."
+        self.save()
+
+    def set_volume(self, ip: str, port: int, volume: int) -> None:
+        level = clamp_volume(volume)
+        with self._lock:
+            item = self._items.get((ip, port))
+            if item is not None:
+                item.volume = level
+
+    def set_master_volume(self, volume: int) -> None:
+        with self._lock:
+            self.master_volume = clamp_volume(volume)
+
+    def master_volume_value(self) -> int:
+        with self._lock:
+            return self.master_volume
 
     def remove(self, ip: str, port: int) -> None:
         with self._lock:
@@ -141,6 +196,8 @@ class Roster:
                     source=item.source,
                     last_seen=item.last_seen,
                     send_error=item.send_error,
+                    volume=item.volume,
+                    name_locked=item.name_locked,
                 )
                 for item in self._items.values()
             ]
@@ -158,6 +215,7 @@ class Roster:
                     "source": item.source,
                     "online": online,
                     "send_error": item.send_error,
+                    "volume": item.volume,
                 }
             )
         rows.sort(key=lambda row: (row["name"].lower(), row["ip"], row["port"]))
@@ -169,6 +227,18 @@ def default_roster_path() -> Path:
         root = os.environ.get("APPDATA") or str(Path.home())
         return Path(root) / "audiostream" / "pc1-devices.json"
     return Path.home() / ".config" / "audiostream" / "pc1-devices.json"
+
+
+def clamp_volume(value) -> int:
+    try:
+        level = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 100
+    if level < 0:
+        return 0
+    if level > 100:
+        return 100
+    return level
 
 
 def _ipv4(host: str) -> str:

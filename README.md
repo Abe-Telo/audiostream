@@ -64,6 +64,10 @@ The window sends this computer's sound to every PC in the list. Add as many as y
 
 Choose **Start sending**. One capture is sent to every computer in the list. Remove a computer when it should stop hearing this PC. The list is saved and comes back the next time you open the window.
 
+**Volume** next to the sound list is the level for every computer. Each computer in the list also has its own slider. Click a computer's name to rename it. **Receiver** plays incoming audio on this PC, on the default speakers.
+
+These controls are in the Python window (`PC1.bat` from this source). The 0.3.0 exe does not include them. If `AudiostreamPC1.exe` is sitting in the same folder as `PC1.bat`, move the exe out of that folder first, or the bat file opens the older program.
+
 When Windows asks, allow Python on private networks. PC1 listens for other computers on UDP **45124** and **45125**. Each PC2 still receives the audio on UDP **45123**.
 
 The command line still works when you want one destination and no window:
