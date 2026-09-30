@@ -24,6 +24,7 @@ from audiostream.net import (
     sender_socket,
 )
 from audiostream.packet import encode_packet, frames_per_packet
+from audiostream.pcm import peak_s16le
 
 
 def run_sender(args) -> None:
@@ -32,9 +33,12 @@ def run_sender(args) -> None:
         return
 
     host, port = _destination(args)
-    mic = open_loopback(args.device)
     frames = frames_per_packet(args.sample_rate, args.chunk_ms, args.channels)
     requested = max(1, args.sample_rate * args.chunk_ms // 1000)
+    if sys.platform == "win32":
+        _run_windows_sender(args, host, port, frames, requested)
+        return
+    mic = open_loopback(args.device)
     name = getattr(mic, "name", "loopback")
     print(f"Capturing: {name}", flush=True)
     print(
@@ -110,6 +114,79 @@ def run_sender(args) -> None:
                 recorder_cm.__exit__(None, None, None)
             except Exception:
                 pass
+        sock.close()
+
+
+def _run_windows_sender(args, host: str, port: int, frames: int, requested: int) -> None:
+    from audiostream.win_audio import open_capture
+
+    capture = open_capture(args.device, args.sample_rate, args.channels, frames)
+    print(f"Capturing: {capture.name}", flush=True)
+    print(
+        f"Sending {capture.sample_rate} Hz, {args.channels} ch, "
+        f"{frames} frames/packet ({frames * args.channels * 2} bytes) to {host}:{port}",
+        flush=True,
+    )
+    if frames < requested:
+        print(
+            "note: packet size was capped so each datagram stays under a typical LAN MTU. "
+            f"Requested {requested} frames, sending {frames}.",
+            flush=True,
+        )
+    print(
+        f"If the receiver stays silent, confirm {host} and allow UDP {port} through its firewall.",
+        flush=True,
+    )
+    print("Ctrl+C to stop.", flush=True)
+    try:
+        _send_pcm(capture.read, host, port, capture.sample_rate, args.channels, capture.name)
+    finally:
+        capture.close()
+
+
+def _send_pcm(read_pcm, host: str, port: int, sample_rate: int, channels: int, name: str) -> None:
+    sock = sender_socket()
+    sequence = 0
+    sent = 0
+    peak = 0.0
+    quiet = 0
+    last = time.monotonic()
+    try:
+        while True:
+            pcm = read_pcm()
+            if not pcm:
+                continue
+            peak = max(peak, peak_s16le(pcm))
+            packet = encode_packet(sequence, pcm, sample_rate, channels)
+            try:
+                sock.sendto(packet, (host, port))
+            except OSError as exc:
+                raise NetworkError(
+                    f"UDP send to {host}:{port} failed: {exc}. "
+                    "Check that the receiver is on the same LAN and the address is correct."
+                ) from exc
+            sequence = (sequence + 1) & 0xFFFFFFFF
+            sent += 1
+            now = time.monotonic()
+            if now - last >= 1.0:
+                print(f"sent {sent} packets  peak {peak:.3f}", flush=True)
+                if peak < 0.001:
+                    quiet += 1
+                    if quiet == 5:
+                        print(
+                            "note: the system mix is silent. Play audio on this PC. "
+                            "The sender records desktop audio, not the microphone.",
+                            flush=True,
+                        )
+                else:
+                    quiet = 0
+                peak = 0.0
+                last = now
+    except (AudioError, NetworkError):
+        raise
+    except Exception as exc:
+        raise AudioError(f"Capture failed on {name}: {exc}") from exc
+    finally:
         sock.close()
 
 

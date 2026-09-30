@@ -1,4 +1,6 @@
-# On Windows, prefer Python 3.12 or 3.13. Python 3.14 may install NumPy and then fail to import it.
-numpy>=1.24
-soundcard>=0.4.3
+# Windows captures with WASAPI and does not need NumPy.
+pyaudiowpatch>=0.2.12.8; sys_platform == "win32"
+# Linux and macOS use soundcard, which needs NumPy.
+numpy>=1.24; sys_platform != "win32"
+soundcard>=0.4.3; sys_platform != "win32"
 pytest>=8.0

@@ -9,7 +9,7 @@ There are two roles in one package:
 
 ## Install
 
-Python 3.10 or newer. On Windows, use Python 3.12 or 3.13. Python 3.14 can install NumPy and then fail to load it (`DLL load failed while importing _multiarray_umath`). If that happens, install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) and run `python -m pip install --force-reinstall "numpy>=1.24"`. If it still fails, install Python 3.12 and run `py -3.12` instead of `python`.
+Python 3.10 or newer. On Windows the sender uses WASAPI and does not need NumPy. Run each command on its own line. Pasting two commands onto one line makes pip fail with `no such option: -m`.
 
 ```bash
 python -m pip install -r requirements.txt
@@ -39,9 +39,12 @@ Default listen port is UDP **45123**, bound to all interfaces. The jitter buffer
 ## Run the sender (PC1)
 
 ```bash
+python -m pip install -r requirements.txt
 python -m audiostream sender --list-devices
-python -m audiostream sender --host 192.168.1.20
+python -m audiostream sender --host 192.168.1.198
 ```
+
+On PC1 you can also double-click `sender.bat`. It installs the Windows library, then sends to 192.168.1.198.
 
 `--host` is the receiver's LAN address (the IP flag is the path that always works). The sender captures the monitor of the default output, which is the system mix, not the microphone. Pick another output's loopback with `--device` if you need to.
 

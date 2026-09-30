@@ -168,6 +168,10 @@ def list_output_devices() -> list[DeviceInfo]:
 
 
 def list_loopback_devices() -> list[DeviceInfo]:
+    if sys.platform == "win32":
+        from audiostream.win_audio import list_loopbacks
+
+        return list_loopbacks()
     sc = load_backend()
     return [_describe(number, mic, "loopback") for number, mic in enumerate(_loopback_mics(sc), start=1)]
 

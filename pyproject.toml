@@ -9,8 +9,9 @@ description = "Stream system audio over the LAN and play it on another PC"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=1.24",
-    "soundcard>=0.4.3",
+    "pyaudiowpatch>=0.2.12.8; sys_platform == 'win32'",
+    "numpy>=1.24; sys_platform != 'win32'",
+    "soundcard>=0.4.3; sys_platform != 'win32'",
 ]
 
 [project.scripts]
