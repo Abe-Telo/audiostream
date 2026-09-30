@@ -7,7 +7,7 @@ import threading
 import time
 
 from audiostream.net import sender_socket
-from audiostream.packet import encode_packet, frames_per_packet
+from audiostream.packet import encode_packet, frames_per_packet, repair_copies
 from audiostream.pcm import peak_s16le
 from audiostream.roster import Roster
 
@@ -79,6 +79,7 @@ class StreamHub:
         captured = 0
         peak = 0.0
         last = time.monotonic()
+        history: list[bytes] = []
         with self.stats.lock:
             self.stats.running = True
             self.stats.capture = capture.name
@@ -99,12 +100,13 @@ class StreamHub:
                 destinations = self.roster.destinations()
                 if destinations:
                     packet = encode_packet(sequence, pcm, capture.sample_rate, self.channels)
-                    for dest in destinations:
-                        try:
-                            sock.sendto(packet, (dest.ip, dest.port))
-                            self.roster.clear_send_error(dest.ip, dest.port)
-                        except OSError as exc:
-                            self.roster.mark_send_error(dest.ip, dest.port, str(exc))
+                    for blob in repair_copies(history, packet):
+                        for dest in destinations:
+                            try:
+                                sock.sendto(blob, (dest.ip, dest.port))
+                                self.roster.clear_send_error(dest.ip, dest.port)
+                            except OSError as exc:
+                                self.roster.mark_send_error(dest.ip, dest.port, str(exc))
                     sequence = (sequence + 1) & 0xFFFFFFFF
                 now = time.monotonic()
                 if now - last >= 0.25:

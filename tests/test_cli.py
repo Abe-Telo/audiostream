@@ -11,7 +11,14 @@ def _device(index: int, name: str) -> DeviceInfo:
 
 
 def test_help_exits_cleanly():
-    for argv in (["--help"], ["sender", "--help"], ["receiver", "--help"], ["pc1", "--help"], ["pc2", "--help"]):
+    for argv in (
+        ["--help"],
+        ["sender", "--help"],
+        ["receiver", "--help"],
+        ["pc1", "--help"],
+        ["pc2", "--help"],
+        ["room", "--help"],
+    ):
         with pytest.raises(SystemExit) as caught:
             main(argv)
         assert caught.value.code == 0

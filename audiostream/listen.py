@@ -21,8 +21,10 @@ class ListenStats:
 
 
 class Listener:
-    def __init__(self, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, port: int = DEFAULT_PORT, buffer_ms: int = 300, conceal: bool = True) -> None:
         self.port = port
+        self.buffer_ms = buffer_ms
+        self.conceal = conceal
         self.stats = ListenStats()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -99,7 +101,7 @@ class Listener:
         holder: dict = {"jitter": None, "generation": 0, "source": ""}
         recv = threading.Thread(
             target=_receive,
-            args=(sock, holder, state_lock, self.stats, self._stop),
+            args=(sock, holder, state_lock, self.stats, self._stop, self.buffer_ms, self.conceal),
             name="audiostream-pc2-recv",
             daemon=True,
         )
@@ -128,7 +130,15 @@ class Listener:
             recv.join(timeout=1.0)
 
 
-def _receive(sock, holder: dict, lock: threading.Lock, stats: ListenStats, stop: threading.Event) -> None:
+def _receive(
+    sock,
+    holder: dict,
+    lock: threading.Lock,
+    stats: ListenStats,
+    stop: threading.Event,
+    buffer_ms: int = 300,
+    conceal: bool = True,
+) -> None:
     while not stop.is_set():
         try:
             data, addr = sock.recvfrom(65535)
@@ -143,7 +153,13 @@ def _receive(sock, holder: dict, lock: threading.Lock, stats: ListenStats, stop:
         with lock:
             jitter = holder["jitter"]
             if jitter is None or jitter.sample_rate != packet.sample_rate or jitter.channels != packet.channels:
-                holder["jitter"] = JitterBuffer(packet.sample_rate, packet.channels, 120, packet.frame_count)
+                holder["jitter"] = JitterBuffer(
+                    packet.sample_rate,
+                    packet.channels,
+                    buffer_ms,
+                    packet.frame_count,
+                    conceal=conceal,
+                )
                 holder["generation"] += 1
                 jitter = holder["jitter"]
             if holder["source"] != addr[0]:

@@ -41,6 +41,17 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             run_pc2()
+        elif args.cmd == "room":
+            try:
+                from audiostream.room_app import run_room
+            except ImportError as exc:
+                print(
+                    "error: Audiostream Room needs tkinter, which is included with python.org Python.\n"
+                    f"Details: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            run_room()
         else:
             from audiostream.receiver import run_receiver
 
@@ -120,11 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("pc1", help="Open the PC1 window and send to every computer you add")
     sub.add_parser("pc2", help="Open the PC2 window and play a sender on this PC")
+    sub.add_parser("room", help="Open Audiostream Room and choose sender or receiver")
     return parser
 
 
 def _validate(args) -> None:
-    if args.cmd in {"pc1", "pc2"} or args.list_devices:
+    if args.cmd in {"pc1", "pc2", "room"} or args.list_devices:
         return
     if args.cmd == "sender":
         if args.sample_rate < 8000 or args.sample_rate > 192000:
