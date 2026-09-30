@@ -47,17 +47,14 @@ class Listener:
         self._thread.start()
 
     def stop(self) -> None:
+        # The playback thread closes the speaker itself. Closing it from the
+        # button thread while write() is in progress crashes Windows audio.
         self._stop.set()
-        live = self._live
-        player = live["player"] if live else self._player
-        if player is not None:
-            try:
-                player.close()
-            except Exception:
-                pass
         thread = self._thread
-        if thread is not None:
+        if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        if thread is not None and not thread.is_alive():
+            self._thread = None
         with self.stats.lock:
             if self.stats.phase != "error":
                 self.stats.phase = "stopped"

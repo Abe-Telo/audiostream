@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import time as time_module
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -10,7 +11,7 @@ from audiostream.hub import StreamHub, device_argument
 from audiostream.listen import Listener
 from audiostream.logsetup import ensure_stdio
 from audiostream.net import DEFAULT_PORT, lan_ipv4
-from audiostream.presence import CONTROL_PORT, JoinListener, ReceiverWatch, SenderBeacon
+from audiostream.presence import CONTROL_PORT, JoinListener, PresenceService, ReceiverWatch, SenderBeacon
 from audiostream.roster import Roster, default_roster_path
 from audiostream.tray import TrayIcon, set_window_icon
 
@@ -36,6 +37,7 @@ class Pc1App:
         self._joins: JoinListener | None = None
         self._watch: ReceiverWatch | None = None
         self._beacon: SenderBeacon | None = None
+        self._presence: PresenceService | None = None
         self._tray: TrayIcon | None = None
         self._told_tray = False
 
@@ -79,9 +81,25 @@ class Pc1App:
             pass
 
     def _tray_items(self):
-        sending = "Stop sending" if self._want_stream else "Start sending"
-        receiving = "Stop receiving" if self._want_listen else "Receiver"
-        return [("Open", self.show), (sending, self._toggle), (receiving, self._toggle_receiver), None, ("Quit", self.quit)]
+        from audiostream.startup import set_startup, startup_enabled
+
+        return [
+            ("Open", self.show),
+            ("check", "Add to startup", startup_enabled, set_startup),
+            ("scale", "Volume", self.roster.master_volume_value, self._tray_volume),
+            None,
+            ("Quit", self.quit),
+        ]
+
+    def _tray_volume(self, value) -> None:
+        self._on_master_volume(value)
+        try:
+            if self.master_scale.winfo_exists():
+                from audiostream.roster import clamp_volume
+
+                self.master_scale.set(clamp_volume(value))
+        except tk.TclError:
+            pass
 
     def quit(self) -> None:
         if self._tray is not None:
@@ -93,7 +111,7 @@ class Pc1App:
         self._want_listen = False
         self.hub.stop()
         self.listener.stop()
-        for service in (self._joins, self._watch, self._beacon):
+        for service in (self._joins, self._watch, self._beacon, self._presence):
             if service is not None:
                 service.stop()
         try:
@@ -247,6 +265,10 @@ class Pc1App:
         if not self._joins.error:
             self._beacon = SenderBeacon(socket.gethostname(), control_port=self._joins.bound_port)
             self._beacon.start()
+        self._presence = PresenceService(self.roster, socket.gethostname())
+        self._presence.start()
+        if self._presence.error and not self.roster.last_event:
+            self.roster.last_event = self._presence.error
 
     def _toggle(self) -> None:
         if self._want_stream:
@@ -276,6 +298,19 @@ class Pc1App:
             self.roster.save()
         except OSError:
             pass
+
+    def _volume_released(self, ip: str, port: int) -> None:
+        self._save_roster()
+        if self._presence is None:
+            return
+        for row in self.roster.snapshot():
+            if row["ip"] == ip and row["port"] == port:
+                self._presence.publish_volume(ip, port, row["volume"])
+                return
+
+    def _publish(self) -> None:
+        if self._presence is not None:
+            self._presence.publish_local_changes()
 
     def _on_master_volume(self, value) -> None:
         from audiostream.roster import clamp_volume
@@ -318,6 +353,7 @@ class Pc1App:
                 return
             dialog.destroy()
             self.refresh_devices()
+            self._publish()
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=2, column=0, sticky="e")
@@ -339,23 +375,83 @@ class Pc1App:
         dialog.configure(bg="#f3f3f3")
         frame = ttk.Frame(dialog, padding=16)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Name").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Computers running Audiostream", font=(self._font, 10, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        status_var = tk.StringVar(value="Looking for computers on this network...")
+        ttk.Label(frame, textvariable=status_var).grid(row=1, column=0, sticky="w", pady=(2, 6))
+        list_wrap = tk.Frame(frame, bg="#ffffff", highlightbackground="#d0d0d0", highlightthickness=1)
+        list_wrap.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        found = tk.Listbox(list_wrap, height=6, width=42, activestyle="dotbox", font=(self._font, 10), borderwidth=0)
+        found.pack(fill="x")
+        self._scan_rows: list[dict] = []
+        scan_started = time_module.monotonic()
+        if self._presence is not None:
+            self._presence.probe()
+        else:
+            status_var.set("Type an IP address below.")
+
+        def fill_scan() -> None:
+            if not dialog.winfo_exists():
+                return
+            rows = self._presence.peers() if self._presence is not None else []
+            known = {(row["ip"], row["port"]) for row in self.roster.snapshot()}
+            labels = []
+            for row in rows:
+                mark = "  (already in the list)" if (row["ip"], row["port"]) in known else ""
+                labels.append(f"{row['name']}    {row['ip']}{mark}")
+            if labels != list(found.get(0, "end")):
+                found.delete(0, "end")
+                for label in labels:
+                    found.insert("end", label)
+                self._scan_rows = rows
+            if self._presence is None:
+                return
+            if time_module.monotonic() - scan_started < 2.5:
+                dialog.after(300, fill_scan)
+                return
+            if rows:
+                status_var.set(f"Found {len(rows)}.")
+            else:
+                status_var.set("No other computers answered. Type an IP address below.")
+
+        def add_selected() -> None:
+            selection = found.curselection()
+            if not selection:
+                messagebox.showerror("Add computer", "Choose a computer from the list.", parent=dialog)
+                return
+            if selection[0] >= len(self._scan_rows):
+                return
+            row = self._scan_rows[selection[0]]
+            name_var.set(row["name"])
+            ip_var.set(row["ip"])
+            port_var.set(str(row["port"]))
+            submit()
+
+        found.bind("<Double-Button-1>", lambda _event: add_selected())
+        ttk.Button(frame, text="Add selected", command=add_selected).grid(row=3, column=0, sticky="w", pady=(0, 12))
+        dialog.after(300, fill_scan)
+
+        ttk.Label(frame, text="Or type an address").grid(row=4, column=0, sticky="w")
+        ttk.Label(frame, text="Name").grid(row=5, column=0, sticky="w")
         name_var = tk.StringVar()
-        name_entry = ttk.Entry(frame, textvariable=name_var, width=32)
-        name_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(frame, text="IP address").grid(row=2, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=name_var, width=42).grid(row=6, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(frame, text="IP address").grid(row=7, column=0, sticky="w")
         ip_var = tk.StringVar()
-        ip_entry = ttk.Entry(frame, textvariable=ip_var, width=32)
-        ip_entry.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(frame, text="Port").grid(row=4, column=0, sticky="w")
+        ip_entry = ttk.Entry(frame, textvariable=ip_var, width=42)
+        ip_entry.grid(row=8, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(frame, text="Port").grid(row=9, column=0, sticky="w")
         port_var = tk.StringVar(value=str(DEFAULT_PORT))
-        ttk.Entry(frame, textvariable=port_var, width=32).grid(row=5, column=0, sticky="ew", pady=(0, 12))
+        ttk.Entry(frame, textvariable=port_var, width=42).grid(row=10, column=0, sticky="ew", pady=(0, 12))
 
         def submit() -> None:
             try:
                 port = int(port_var.get().strip())
             except ValueError:
                 messagebox.showerror("Add computer", "Port must be a number.", parent=dialog)
+                return
+            if ip_var.get().strip() == lan_ipv4():
+                messagebox.showerror("Add computer", "That's this computer.", parent=dialog)
                 return
             try:
                 self.roster.upsert(ip_var.get(), port, name_var.get(), "manual")
@@ -364,9 +460,10 @@ class Pc1App:
                 return
             dialog.destroy()
             self.refresh_devices()
+            self._publish()
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=6, column=0, sticky="e")
+        buttons.grid(row=11, column=0, sticky="e")
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
         ttk.Button(buttons, text="Add", command=submit).pack(side="right", padx=(0, 8))
         dialog.bind("<Return>", lambda _event: submit())
@@ -398,8 +495,8 @@ class Pc1App:
                 self.list_frame,
                 text=(
                     "No other computers yet.\n\n"
-                    "Start the receiver on the other PC. It will show up here on its own.\n"
-                    "Or click Add computer and type its IP address, for example 192.168.1.198."
+                    "Click Add computer. Audiostream looks for other PCs running this program.\n"
+                    "You can also type an IP address, for example 192.168.1.198."
                 ),
                 bg="#ffffff",
                 fg="#5d5d5d",
@@ -457,7 +554,10 @@ class Pc1App:
                     ip, port, value, label
                 )
             )
-            scale.bind("<ButtonRelease-1>", lambda _event: self._save_roster())
+            scale.bind(
+                "<ButtonRelease-1>",
+                lambda _event, ip=row["ip"], port=row["port"]: self._volume_released(ip, port),
+            )
             scale.grid(row=0, column=1, rowspan=2, sticky="e", padx=(8, 0))
             percent.grid(row=0, column=2, rowspan=2, sticky="e")
             tk.Button(
@@ -476,6 +576,7 @@ class Pc1App:
     def _remove(self, ip: str, port: int) -> None:
         self.roster.remove(ip, port)
         self.refresh_devices()
+        self._publish()
 
     def _tick(self) -> None:
         if not self.root.winfo_exists():

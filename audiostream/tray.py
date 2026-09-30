@@ -179,20 +179,26 @@ class TrayIcon:
         ctypes.windll.shell32.Shell_NotifyIconW(self._nim_modify, ctypes.byref(nid))
 
     def _open(self) -> None:
-        for label, command in self.items():
-            if label == "Open":
+        for item in self.items():
+            label, command = _command_item(item)
+            if label == "Open" and command is not None:
                 command()
                 return
 
     def _popup(self) -> None:
         import tkinter as tk
 
+        items = list(self.items())
+        if any(_item_kind(item) in ("check", "scale") for item in items):
+            self._popup_panel(items)
+            return
         menu = tk.Menu(self.root, tearoff=0)
-        for item in self.items():
-            if item is None:
+        for item in items:
+            if _item_kind(item) == "separator":
                 menu.add_separator()
-            else:
-                label, command = item
+                continue
+            label, command = _command_item(item)
+            if label is not None and command is not None:
                 menu.add_command(label=label, command=command)
         x = self.root.winfo_pointerx()
         y = self.root.winfo_pointery()
@@ -200,6 +206,134 @@ class TrayIcon:
             menu.tk_popup(x, y)
         finally:
             menu.grab_release()
+
+    def _popup_panel(self, items) -> None:
+        import tkinter as tk
+
+        previous = getattr(self, "_panel", None)
+        if previous is not None:
+            try:
+                previous.destroy()
+            except tk.TclError:
+                pass
+        panel = tk.Toplevel(self.root)
+        self._panel = panel
+        panel.overrideredirect(True)
+        try:
+            panel.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        panel.configure(bg="#ffffff")
+        frame = tk.Frame(panel, bg="#ffffff", highlightbackground="#c8c8c8", highlightthickness=1)
+        frame.pack()
+        for item in items:
+            kind = _item_kind(item)
+            if kind == "separator":
+                tk.Frame(frame, bg="#e6e6e6", height=1).pack(fill="x", padx=8, pady=4)
+            elif kind == "command":
+                label, command = _command_item(item)
+                tk.Button(
+                    frame,
+                    text=label,
+                    command=lambda action=command: self._run_panel_command(action),
+                    relief="flat",
+                    anchor="w",
+                    bg="#ffffff",
+                    activebackground="#e8f0fe",
+                    font=("Segoe UI", 10),
+                    padx=12,
+                    pady=4,
+                ).pack(fill="x")
+            elif kind == "check":
+                _kind, label, getter, setter = item
+                variable = tk.BooleanVar(value=bool(getter()))
+
+                def toggle(var=variable, apply=setter) -> None:
+                    try:
+                        apply(bool(var.get()))
+                    except Exception:
+                        var.set(not var.get())
+
+                tk.Checkbutton(
+                    frame,
+                    text=label,
+                    variable=variable,
+                    command=toggle,
+                    bg="#ffffff",
+                    activebackground="#ffffff",
+                    anchor="w",
+                    font=("Segoe UI", 10),
+                    padx=8,
+                ).pack(fill="x")
+            elif kind == "scale":
+                _kind, label, getter, setter = item
+                row = tk.Frame(frame, bg="#ffffff")
+                row.pack(fill="x", padx=12, pady=(4, 8))
+                tk.Label(row, text=label, bg="#ffffff", font=("Segoe UI", 10)).pack(anchor="w")
+                scale = tk.Scale(
+                    row,
+                    from_=0,
+                    to=100,
+                    orient="horizontal",
+                    showvalue=True,
+                    length=180,
+                    sliderlength=16,
+                    width=12,
+                    bg="#ffffff",
+                    highlightthickness=0,
+                    troughcolor="#d0d0d0",
+                    command=setter,
+                )
+                scale.set(getter())
+                scale.pack(anchor="w")
+        panel.update_idletasks()
+        x = self.root.winfo_pointerx()
+        y = self.root.winfo_pointery()
+        width = max(panel.winfo_width(), 1)
+        height = max(panel.winfo_height(), 1)
+        if x + width > panel.winfo_screenwidth():
+            x = max(0, panel.winfo_screenwidth() - width)
+        if y + height > panel.winfo_screenheight():
+            y = max(0, panel.winfo_screenheight() - height)
+        panel.geometry(f"+{x}+{y}")
+        panel.focus_force()
+
+        def close_if_left() -> None:
+            try:
+                focus = panel.focus_get()
+            except tk.TclError:
+                return
+            if focus is None or not str(focus).startswith(str(panel)):
+                try:
+                    panel.destroy()
+                except tk.TclError:
+                    pass
+
+        panel.bind("<Escape>", lambda _event: panel.destroy())
+        panel.after(250, lambda: panel.bind("<FocusOut>", lambda _event: panel.after(200, close_if_left)))
+
+    def _run_panel_command(self, command) -> None:
+        panel = getattr(self, "_panel", None)
+        if panel is not None:
+            try:
+                panel.destroy()
+            except Exception:
+                pass
+        command()
+
+
+def _item_kind(item) -> str:
+    if item is None:
+        return "separator"
+    if isinstance(item, tuple) and item and item[0] in ("check", "scale", "separator"):
+        return item[0]
+    return "command"
+
+
+def _command_item(item):
+    if _item_kind(item) != "command" or not isinstance(item, tuple) or len(item) != 2:
+        return None, None
+    return item[0], item[1]
 
 
 def _load_icon(path: Path):

@@ -6,6 +6,8 @@ and then fail to load its DLL, which blocked the sender entirely.
 
 from __future__ import annotations
 
+import threading
+
 from audiostream.audio import AudioError, DeviceInfo
 from audiostream.pcm import fit_s16le
 
@@ -19,21 +21,30 @@ class WindowsCapture:
         self._pa = pa
         self._opened_channels = opened_channels
         self._frames = frames
+        self._close_lock = threading.Lock()
 
     def read(self) -> bytes:
         raw = self._stream.read(self._frames, exception_on_overflow=False)
         return fit_s16le(raw, self._opened_channels, self.channels)
 
     def close(self) -> None:
+        with self._close_lock:
+            stream = self._stream
+            pa = self._pa
+            if stream is None:
+                return
+            self._stream = None
+            self._pa = None
         try:
-            self._stream.stop_stream()
-            self._stream.close()
+            stream.stop_stream()
+            stream.close()
         except Exception:
             pass
-        try:
-            self._pa.terminate()
-        except Exception:
-            pass
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                pass
 
 
 def list_loopbacks() -> list[DeviceInfo]:
@@ -188,6 +199,7 @@ class WindowsOutput:
         self.sample_rate = sample_rate
         self._stream = stream
         self._pa = pa
+        self._close_lock = threading.Lock()
 
     def write(self, pcm: bytes, src_channels: int | None = None) -> None:
         from audiostream.pcm import fit_s16le
@@ -198,15 +210,23 @@ class WindowsOutput:
             self._stream.write(fitted)
 
     def close(self) -> None:
+        with self._close_lock:
+            stream = self._stream
+            pa = self._pa
+            if stream is None:
+                return
+            self._stream = None
+            self._pa = None
         try:
-            self._stream.stop_stream()
-            self._stream.close()
+            stream.stop_stream()
+            stream.close()
         except Exception:
             pass
-        try:
-            self._pa.terminate()
-        except Exception:
-            pass
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                pass
 
 
 def list_outputs() -> list[DeviceInfo]:

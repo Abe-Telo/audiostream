@@ -12,6 +12,7 @@ from audiostream.hub import device_argument
 from audiostream.listen import Listener
 from audiostream.logsetup import ensure_stdio
 from audiostream.net import lan_ipv4
+from audiostream.presence import PresenceService
 from audiostream.tray import TrayIcon, set_window_icon
 
 
@@ -22,8 +23,9 @@ def run_pc2() -> None:
 
 
 class Pc2App:
-    def __init__(self, start_audio: bool = True) -> None:
+    def __init__(self, start_audio: bool = True, start_presence: bool = True) -> None:
         self.listener = Listener()
+        self._presence: PresenceService | None = None
         self._tray: TrayIcon | None = None
         self._told_tray = False
         self._tone_running = False
@@ -39,6 +41,9 @@ class Pc2App:
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_button)
         self.root.after(250, self._tick)
+        if start_presence:
+            self._presence = PresenceService(None, socket.gethostname())
+            self._presence.start()
         if self.start_audio:
             self.root.after(400, self.start_listening)
 
@@ -76,6 +81,8 @@ class Pc2App:
         if self._tray is not None:
             self._tray.remove()
         self.listener.stop()
+        if self._presence is not None:
+            self._presence.stop()
         self.root.destroy()
 
     def _build(self) -> None:

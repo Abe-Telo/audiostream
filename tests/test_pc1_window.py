@@ -54,7 +54,7 @@ def test_closing_the_window_hides_to_the_tray():
             self.tip = text
 
     sender = Pc1App(roster=Roster(None), start_network=False)
-    player = Pc2App(start_audio=False)
+    player = Pc2App(start_audio=False, start_presence=False)
     try:
         sender._tray = DummyTray()
         player._tray = DummyTray()
@@ -111,6 +111,64 @@ def test_receiver_volume_and_rename_controls():
         assert app.receiver_button.cget("text") == "Receiver"
     finally:
         app.close()
+
+
+def test_add_computer_shows_a_scan_list_and_the_tray_menu():
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        probe = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display")
+    probe.destroy()
+
+    from audiostream.pc1_app import Pc1App
+    from audiostream.tray import TrayIcon
+
+    app = Pc1App(roster=Roster(None), start_network=False)
+    try:
+        labels = []
+        kinds = []
+        for item in app._tray_items():
+            if item is None:
+                kinds.append("separator")
+            elif item[0] in ("check", "scale"):
+                kinds.append(item[0])
+                labels.append(item[1])
+            else:
+                kinds.append("command")
+                labels.append(item[0])
+        assert "Open" in labels
+        assert "Add to startup" in labels
+        assert "Volume" in labels
+        assert "Quit" in labels
+        assert "check" in kinds
+        assert "scale" in kinds
+        app._add_dialog()
+        app.root.update()
+        dialogs = [child for child in app.root.winfo_children() if child.winfo_class() == "Toplevel"]
+        assert dialogs
+        assert _of_class(dialogs[0], "Listbox")
+        texts = [child.cget("text") for child in _of_class(dialogs[0], "TLabel") if hasattr(child, "cget")]
+        assert any("Audiostream" in text for text in texts)
+        icon = TrayIcon(app.root, "Audiostream PC1", app._tray_items)
+        icon._popup()
+        app.root.update()
+        assert icon._panel is not None
+        assert _of_class(icon._panel, "Checkbutton")
+        assert _of_class(icon._panel, "Scale")
+        icon._panel.destroy()
+        dialogs[0].destroy()
+    finally:
+        app.close()
+
+
+def _of_class(widget, kind):
+    found = []
+    for child in widget.winfo_children():
+        if child.winfo_class() == kind:
+            found.append(child)
+        found.extend(_of_class(child, kind))
+    return found
 
 
 def _scales(widget):

@@ -66,6 +66,10 @@ Choose **Start sending**. One capture is sent to every computer in the list. Rem
 
 **Volume** next to the sound list is the level for every computer. Each computer in the list also has its own slider. Click a computer's name to rename it. **Receiver** plays incoming audio on this PC, on the default speakers.
 
+**Add computer** looks on the network for other PCs running Audiostream and lists them. Pick one, or type an IP address. A computer you add shows up on the other PCs that are running Audiostream too. That uses UDP **45127**.
+
+Right-click the tray icon for **Open**, **Add to startup** (a check mark when Windows will open Audiostream at sign-in), **Volume**, and **Quit**.
+
 These controls are in the Python window (`PC1.bat` from this source). The 0.3.0 exe does not include them. If `AudiostreamPC1.exe` is sitting in the same folder as `PC1.bat`, move the exe out of that folder first, or the bat file opens the older program.
 
 When Windows asks, allow Python on private networks. PC1 listens for other computers on UDP **45124** and **45125**. Each PC2 still receives the audio on UDP **45123**.

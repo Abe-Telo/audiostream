@@ -51,16 +51,14 @@ class StreamHub:
         self._thread.start()
 
     def stop(self) -> None:
+        # The capture thread closes the device itself. Closing it from here
+        # while read() is in progress crashes Windows audio.
         self._stop.set()
-        capture = self._capture
-        if capture is not None:
-            try:
-                capture.close()
-            except Exception:
-                pass
         thread = self._thread
-        if thread is not None:
+        if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        if thread is not None and not thread.is_alive():
+            self._thread = None
         with self.stats.lock:
             self.stats.running = False
 

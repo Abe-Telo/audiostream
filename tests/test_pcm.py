@@ -39,6 +39,28 @@ def test_peak_s16le():
     assert peak_s16le(b"") == 0.0
 
 
+def test_windows_audio_close_is_safe_twice():
+    from audiostream.win_audio import WindowsCapture, WindowsOutput
+
+    class Stream:
+        def stop_stream(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Audio:
+        def terminate(self):
+            pass
+
+    capture = WindowsCapture("speakers", Stream(), Audio(), 2, 2, 240, 48000)
+    capture.close()
+    capture.close()
+    output = WindowsOutput("speakers", Stream(), Audio(), 2, 48000)
+    output.close()
+    output.close()
+
+
 def test_windows_sender_does_not_import_numpy():
     import subprocess
     import sys

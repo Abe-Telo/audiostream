@@ -6,6 +6,14 @@ from audiostream.pcm import scale_s16le
 from audiostream.roster import Roster
 
 
+def test_stop_before_start_is_safe():
+    from audiostream.hub import StreamHub
+    from audiostream.listen import Listener
+
+    StreamHub(Roster(None)).stop()
+    Listener().stop()
+
+
 def test_device_argument():
     assert device_argument("Default playback") is None
     assert device_argument("") is None
