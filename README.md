@@ -7,6 +7,19 @@ There are two roles in one package:
 - **Sender (PC1)** records the desktop mix (WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux) and sends PCM over UDP.
 - **Receiver (PC2)** plays that stream on an output device you choose from a numbered list. Pair Bluetooth in the OS settings first. This app does not implement Bluetooth itself.
 
+## Windows app
+
+Download the two programs. They do not need a separate Python install:
+
+- [AudiostreamPC1.exe](https://github.com/Abe-Telo/audiostream/releases/download/v0.3.0/AudiostreamPC1.exe) on the computer that is playing the sound
+- [AudiostreamPC2.exe](https://github.com/Abe-Telo/audiostream/releases/download/v0.3.0/AudiostreamPC2.exe) on every computer that should hear it
+
+Double-click the file. The window opens. When you close the window, the app stays in the tray by the clock. Right-click that icon and choose **Quit** when you want it to stop. **Open** brings the window back.
+
+On PC1, add as many computers as you want, then click **Start sending**. On PC2, pick the speaker (Bluetooth is in that list after Windows has paired it) and click **Test tone**. You should hear two beeps. PC2 adds itself to PC1 on the same network.
+
+If Windows Firewall asks, allow the app on private networks.
+
 ## Install
 
 Python 3.10 or newer. On Windows the sender uses WASAPI and does not need NumPy. Run each command on its own line. Pasting two commands onto one line makes pip fail with `no such option: -m`.
@@ -40,7 +53,9 @@ Default listen port is UDP **45123**, bound to all interfaces. The jitter buffer
 
 ## PC1 window
 
-On PC1, double-click `PC1.bat` (or `sender.bat`). It installs the Windows audio library, then opens a window.
+On PC1, double-click `AudiostreamPC1.exe`, or `PC1.bat` if you are running from the source folder. Closing the window leaves PC1 in the tray.
+
+On PC2, double-click `AudiostreamPC2.exe`, or `PC2.bat` from the source folder. Closing the window leaves PC2 in the tray and it keeps listening.
 
 The window sends this computer's sound to every PC in the list. Add as many as you want:
 

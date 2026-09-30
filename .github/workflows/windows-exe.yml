@@ -1,0 +1,41 @@
+name: Windows exe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller "pyaudiowpatch>=0.2.12.8"
+      - name: Build PC1
+        run: python -m PyInstaller --noconfirm --clean --windowed --onefile --name AudiostreamPC1 --icon audiostream\icon.ico --add-data "audiostream\icon.ico;audiostream" --hidden-import pyaudiowpatch --hidden-import audiostream.win_audio --distpath dist --workpath build\pc1 packaging\pc1_entry.py
+      - name: Build PC2
+        run: python -m PyInstaller --noconfirm --clean --windowed --onefile --name AudiostreamPC2 --icon audiostream\icon.ico --add-data "audiostream\icon.ico;audiostream" --hidden-import pyaudiowpatch --hidden-import audiostream.win_audio --distpath dist --workpath build\pc2 packaging\pc2_entry.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiostream-windows
+          path: |
+            dist/AudiostreamPC1.exe
+            dist/AudiostreamPC2.exe
+      - name: Publish the exe files
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.0
+          name: Audiostream 0.3.0
+          body: |
+            Windows apps for the two computers. Double-click one. Closing the window leaves it in the tray by the clock. Right-click the icon and choose Quit to stop it.
+          files: |
+            dist/AudiostreamPC1.exe
+            dist/AudiostreamPC2.exe
+          fail_on_unmatched_files: true

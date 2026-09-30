@@ -6,13 +6,16 @@ import socket
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from audiostream.hub import StreamHub, device_argument
+from audiostream.logsetup import ensure_stdio
 from audiostream.net import DEFAULT_PORT, lan_ipv4
 from audiostream.presence import CONTROL_PORT, JoinListener, ReceiverWatch, SenderBeacon
 from audiostream.roster import Roster, default_roster_path
-from audiostream.hub import StreamHub, device_argument
+from audiostream.tray import TrayIcon, set_window_icon
 
 
 def run_pc1() -> None:
+    ensure_stdio()
     app = Pc1App()
     app.run()
 
@@ -30,9 +33,11 @@ class Pc1App:
         self._joins: JoinListener | None = None
         self._watch: ReceiverWatch | None = None
         self._beacon: SenderBeacon | None = None
+        self._tray: TrayIcon | None = None
+        self._told_tray = False
 
         self.root = tk.Tk()
-        self.root.title("Audiostream")
+        self.root.title("Audiostream PC1")
         self.root.geometry("700x720")
         self.root.minsize(560, 560)
         self.root.configure(bg="#f3f3f3")
@@ -40,11 +45,44 @@ class Pc1App:
         self._build()
         if start_network:
             self._start_network()
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_button)
         self.root.after(250, self._tick)
 
     def run(self) -> None:
+        self.root.update_idletasks()
+        set_window_icon(self.root)
+        self._tray = TrayIcon(self.root, "Audiostream PC1", self._tray_items)
+        self._tray.install()
         self.root.mainloop()
+
+    def on_close_button(self) -> None:
+        if self._tray is not None and self._tray.installed:
+            self.root.withdraw()
+            if not self._told_tray:
+                self._tray.balloon(
+                    "Audiostream PC1",
+                    "Still running in the tray, by the clock. Right-click the icon and choose Quit to stop.",
+                )
+                self._told_tray = True
+            return
+        self.quit()
+
+    def show(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    def _tray_items(self):
+        sending = "Stop sending" if self._want_stream else "Start sending"
+        return [("Open", self.show), (sending, self._toggle), None, ("Quit", self.quit)]
+
+    def quit(self) -> None:
+        if self._tray is not None:
+            self._tray.remove()
+        self.close()
 
     def close(self) -> None:
         self._want_stream = False
@@ -330,6 +368,9 @@ class Pc1App:
         level = min(1.0, max(0.0, peak))
         self.meter.coords(self.meter_fill, 0, 0, width * level, 12)
         self.event_label.configure(text=self.roster.last_event)
+        if self._tray is not None:
+            tip = "Audiostream PC1 — sending" if self._want_stream else "Audiostream PC1"
+            self._tray.set_tooltip(tip)
         self.refresh_devices()
         try:
             self.root.after(250, self._tick)

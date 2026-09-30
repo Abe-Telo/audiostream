@@ -30,6 +30,24 @@ def fit_s16le(pcm: bytes, src_channels: int, dst_channels: int) -> bytes:
     return out.tobytes()
 
 
+def beeps_s16le(sample_rate: int = 48000, channels: int = 2) -> bytes:
+    """Two short beeps, interleaved s16le. Used as the PC2 test tone."""
+    import math
+
+    if sample_rate < 1 or channels < 1:
+        raise ValueError("sample rate and channels must be positive")
+    tone = int(sample_rate * 0.15)
+    gap = int(sample_rate * 0.1)
+    pieces = []
+    for _beep in range(2):
+        for index in range(tone):
+            value = int(math.sin(2 * math.pi * 880 * index / sample_rate) * 16000)
+            pieces.extend([value] * channels)
+        pieces.extend([0] * (gap * channels))
+    samples = array.array("h", pieces)
+    return samples.tobytes()
+
+
 def peak_s16le(pcm: bytes) -> float:
     """Peak absolute sample in the range 0..1."""
     usable = len(pcm) - (len(pcm) % 2)

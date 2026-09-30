@@ -1,4 +1,4 @@
-from audiostream.pcm import fit_s16le, peak_s16le
+from audiostream.pcm import beeps_s16le, fit_s16le, peak_s16le
 
 
 def test_fit_s16le_keeps_stereo():
@@ -13,6 +13,13 @@ def test_fit_s16le_drops_extra_channels():
     pcm += (3).to_bytes(2, "little", signed=True)
     pcm += (4).to_bytes(2, "little", signed=True)
     assert fit_s16le(pcm, 4, 2) == pcm[:4]
+
+
+def test_beeps_are_two_audible_bursts():
+    pcm = beeps_s16le(48000, 2)
+    assert peak_s16le(pcm) > 0.2
+    frames = int(48000 * 0.15) * 2 + int(48000 * 0.1) * 2
+    assert len(pcm) == frames * 2 * 2
 
 
 def test_peak_s16le():

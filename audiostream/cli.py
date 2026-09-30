@@ -30,6 +30,17 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             run_pc1()
+        elif args.cmd == "pc2":
+            try:
+                from audiostream.pc2_app import run_pc2
+            except ImportError as exc:
+                print(
+                    "error: the PC2 window needs tkinter, which is included with python.org Python.\n"
+                    f"Details: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            run_pc2()
         else:
             from audiostream.receiver import run_receiver
 
@@ -108,11 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     receiver.add_argument("--discovery-port", type=int, default=DEFAULT_DISCOVERY_PORT)
 
     sub.add_parser("pc1", help="Open the PC1 window and send to every computer you add")
+    sub.add_parser("pc2", help="Open the PC2 window and play a sender on this PC")
     return parser
 
 
 def _validate(args) -> None:
-    if args.cmd == "pc1" or args.list_devices:
+    if args.cmd in {"pc1", "pc2"} or args.list_devices:
         return
     if args.cmd == "sender":
         if args.sample_rate < 8000 or args.sample_rate > 192000:
