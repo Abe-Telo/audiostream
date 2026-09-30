@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sender.add_argument(
         "--device",
-        help="Loopback device index or name. Default: monitor of the default output.",
+        help="Loopback device number (1 is first) or name. Default: monitor of the default output.",
     )
     sender.add_argument("--list-devices", action="store_true", help="List loopback/monitor devices and exit")
 
@@ -76,7 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=120,
         help="Jitter buffer in milliseconds (default 120, useful range 50–200)",
     )
-    receiver.add_argument("--device", help="Output device index or name. Prompts when omitted.")
+    receiver.add_argument(
+        "--device",
+        help="Output device number (1 is first) or name. Prompts when omitted.",
+    )
     receiver.add_argument("--list-devices", action="store_true", help="List output devices and exit")
     receiver.add_argument(
         "--test-tone",

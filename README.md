@@ -9,7 +9,7 @@ There are two roles in one package:
 
 ## Install
 
-Python 3.10 or newer.
+Python 3.10 or newer. On Windows, use Python 3.12 or 3.13. Python 3.14 can install NumPy and then fail to load it (`DLL load failed while importing _multiarray_umath`). If that happens, install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) and run `python -m pip install --force-reinstall "numpy>=1.24"`. If it still fails, install Python 3.12 and run `py -3.12` instead of `python`.
 
 ```bash
 python -m pip install -r requirements.txt
@@ -32,7 +32,7 @@ python -m audiostream receiver --device 1 --test-tone
 
 `--test-tone` plays a two-second tone on the device you picked, then listens for the sender. Use it to prove the Bluetooth output works before anything is on the network.
 
-`--device` takes the number from the list, or a unique part of the name. With no `--device`, the receiver prints the list and asks you to type a number. If stdin is not a terminal, pass `--device`.
+`--device` takes the number from the list, starting at **1**, or a unique part of the name. The first output is `--device 1`. If you only have one playback device, that is device 1. With no `--device`, the receiver prints the list and asks you to type a number. If stdin is not a terminal, pass `--device`.
 
 Default listen port is UDP **45123**, bound to all interfaces. The jitter buffer defaults to **120 ms**.
 

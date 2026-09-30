@@ -11,8 +11,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-import numpy as np
-
 MACOS_LIMITATION = (
     "macOS cannot capture the system mix. CoreAudio only exposes microphones, "
     "so desktop audio will not be recorded unless you install a virtual device "
@@ -34,7 +32,38 @@ class DeviceInfo:
     kind: str  # "output", "loopback", or "input"
 
 
+def import_numpy():
+    """Import NumPy, or raise AudioError with a short Windows install hint."""
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise AudioError(numpy_failure_message(exc)) from exc
+    return np
+
+
+def numpy_failure_message(exc: BaseException) -> str:
+    text = str(exc)
+    windows_dll = sys.platform == "win32" and (
+        "DLL" in text or "_multiarray" in text or "numpy" in text.lower()
+    )
+    if windows_dll:
+        version = sys.version.split()[0]
+        return (
+            f"NumPy failed to load on Windows Python {version}, so audio cannot start.\n"
+            "Install the Microsoft Visual C++ Redistributable (x64), then reinstall NumPy:\n"
+            "  https://aka.ms/vs/17/release/vc_redist.x64.exe\n"
+            "  python -m pip install --force-reinstall \"numpy>=1.24\"\n"
+            "If that still fails, Python 3.14 is the problem. Install Python 3.12 or 3.13 "
+            "from https://www.python.org/downloads/ and use that interpreter instead, "
+            "for example:\n"
+            "  py -3.12 -m pip install -r requirements.txt\n"
+            "  py -3.12 -m audiostream sender --host RECEIVER_IP"
+        )
+    return f"NumPy failed to load: {exc}"
+
+
 def float_to_s16le(samples: np.ndarray) -> bytes:
+    np = import_numpy()
     arr = np.array(samples, dtype=np.float32, copy=True, order="C")
     if arr.ndim == 1:
         arr = arr.reshape(-1, 1)
@@ -45,6 +74,7 @@ def float_to_s16le(samples: np.ndarray) -> bytes:
 
 
 def s16le_to_float(pcm: bytes, channels: int) -> np.ndarray:
+    np = import_numpy()
     if channels < 1:
         raise ValueError("channels must be positive")
     frame_bytes = channels * 2
@@ -56,6 +86,7 @@ def s16le_to_float(pcm: bytes, channels: int) -> np.ndarray:
 
 
 def fit_channels(samples: np.ndarray, channels: int) -> np.ndarray:
+    np = import_numpy()
     arr = np.asarray(samples, dtype=np.float32)
     if arr.ndim == 1:
         arr = arr.reshape(-1, 1)
@@ -79,6 +110,7 @@ def sine_tone(
     frequency: float = 440.0,
     amplitude: float = 0.2,
 ) -> np.ndarray:
+    np = import_numpy()
     count = max(1, int(seconds * sample_rate))
     t = np.arange(count, dtype=np.float32) / float(sample_rate)
     wave = (amplitude * np.sin(2.0 * np.pi * frequency * t)).astype(np.float32)
@@ -104,16 +136,22 @@ def select_device(
                 f"Pass --device with an index from --list-devices."
             )
         _print_devices(devices, kind_label)
-        raw = input_fn(f"Select {kind_label} [0-{len(devices) - 1}] (default 0): ").strip()
-        choice = raw or "0"
+        first = devices[0].index
+        last = devices[-1].index
+        raw = input_fn(f"Select {kind_label} [{first}-{last}] (default {first}): ").strip()
+        choice = raw or str(first)
     choice = choice.strip()
     if choice.isdigit():
-        index = int(choice)
-        if index < 0 or index >= len(devices):
-            raise AudioError(
-                f"Device {index} is out of range. Valid indexes are 0..{len(devices) - 1}."
-            )
-        return devices[index]
+        number = int(choice)
+        for device in devices:
+            if device.index == number:
+                return device
+        numbers = ", ".join(str(device.index) for device in devices)
+        hint = " Device numbers start at 1." if number == 0 else ""
+        raise AudioError(
+            f"Device {number} is not in the list.{hint} Valid numbers: {numbers}.\n"
+            + format_device_list(devices)
+        )
     matches = [device for device in devices if choice.lower() in device.name.lower()]
     if len(matches) == 1:
         return matches[0]
@@ -126,19 +164,19 @@ def select_device(
 def list_output_devices() -> list[DeviceInfo]:
     sc = load_backend()
     speakers = sc.all_speakers()
-    return [_describe(index, speaker, "output") for index, speaker in enumerate(speakers)]
+    return [_describe(number, speaker, "output") for number, speaker in enumerate(speakers, start=1)]
 
 
 def list_loopback_devices() -> list[DeviceInfo]:
     sc = load_backend()
-    return [_describe(index, mic, "loopback") for index, mic in enumerate(_loopback_mics(sc))]
+    return [_describe(number, mic, "loopback") for number, mic in enumerate(_loopback_mics(sc), start=1)]
 
 
 def list_input_devices() -> list[DeviceInfo]:
     """Physical inputs. On macOS this is also where a virtual loopback shows up."""
     sc = load_backend()
     mics = sc.all_microphones(include_loopback=False)
-    return [_describe(index, mic, "input") for index, mic in enumerate(mics)]
+    return [_describe(number, mic, "input") for number, mic in enumerate(mics, start=1)]
 
 
 def open_output(device: DeviceInfo):
@@ -176,12 +214,14 @@ def open_loopback(choice: str | None):
         mic = _default_loopback(sc, mics)
         return mic
     if choice.isdigit():
-        index = int(choice)
-        if index < 0 or index >= len(mics):
+        number = int(choice)
+        if number < 1 or number > len(mics):
+            hint = " Device numbers start at 1." if number == 0 else ""
             raise AudioError(
-                f"Loopback device {index} is out of range. Valid indexes are 0..{len(mics) - 1}."
+                f"Loopback device {number} is not in the list.{hint} "
+                f"Valid numbers are 1..{len(mics)}."
             )
-        return mics[index]
+        return mics[number - 1]
     for mic in mics:
         if choice.lower() in mic.name.lower():
             return mic
@@ -199,8 +239,13 @@ def play_tone(speaker, seconds: float, sample_rate: int, channels: int) -> None:
 
 
 def load_backend():
+    import_numpy()
     try:
         import soundcard as sc
+    except ImportError as exc:
+        if "numpy" in str(exc).lower() or "DLL" in str(exc) or "_multiarray" in str(exc):
+            raise AudioError(numpy_failure_message(exc)) from exc
+        raise AudioError(_backend_failure(exc)) from exc
     except Exception as exc:
         raise AudioError(_backend_failure(exc)) from exc
     return sc

@@ -28,28 +28,32 @@ def test_invalid_chunk_is_rejected(capsys):
 
 
 def test_select_device_by_index_and_name():
-    devices = [_device(0, "Speakers"), _device(1, "Headphones")]
-    assert select_device(devices, "1", interactive=False).name == "Headphones"
+    devices = [_device(1, "Speakers"), _device(2, "Headphones")]
+    assert select_device(devices, "1", interactive=False).name == "Speakers"
+    assert select_device(devices, "2", interactive=False).name == "Headphones"
     assert select_device(devices, "head", interactive=False).name == "Headphones"
 
 
 def test_select_device_prompts_when_interactive():
-    devices = [_device(0, "Speakers"), _device(1, "Headphones")]
-    chosen = select_device(devices, None, interactive=True, input_fn=lambda _prompt: "0")
+    devices = [_device(1, "Speakers"), _device(2, "Headphones")]
+    chosen = select_device(devices, None, interactive=True, input_fn=lambda _prompt: "1")
     assert chosen.name == "Speakers"
 
 
 def test_select_device_errors_are_explicit():
-    devices = [_device(0, "Speakers"), _device(1, "Headphones")]
+    devices = [_device(1, "Speakers"), _device(2, "Headphones")]
     with pytest.raises(Exception) as missing:
-        select_device([], "0", interactive=False)
+        select_device([], "1", interactive=False)
     assert "No" in str(missing.value)
     with pytest.raises(Exception) as out_of_range:
         select_device(devices, "3", interactive=False)
-    assert "out of range" in str(out_of_range.value)
+    assert "not in the list" in str(out_of_range.value)
+    with pytest.raises(Exception) as zero:
+        select_device(devices, "0", interactive=False)
+    assert "start at 1" in str(zero.value)
     with pytest.raises(Exception) as ambiguous:
         select_device(
-            [_device(0, "Room Speaker"), _device(1, "Desk Speaker")],
+            [_device(1, "Room Speaker"), _device(2, "Desk Speaker")],
             "speaker",
             interactive=False,
         )

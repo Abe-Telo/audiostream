@@ -5,13 +5,12 @@ from __future__ import annotations
 import sys
 import time
 
-import numpy as np
-
 from audiostream.audio import (
     MACOS_LIMITATION,
     AudioError,
     fit_channels,
     float_to_s16le,
+    import_numpy,
     format_device_list,
     list_input_devices,
     list_loopback_devices,
@@ -65,6 +64,7 @@ def run_sender(args) -> None:
     try:
         try:
             recorder_cm, recorder = _open_capture(mic, args.sample_rate, args.channels, frames)
+            np = import_numpy()
             while True:
                 data = np.asarray(recorder.record(frames), dtype=np.float32)
                 if data.ndim == 1:
